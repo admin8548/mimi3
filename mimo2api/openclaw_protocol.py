@@ -268,6 +268,7 @@ METHOD_CATEGORIES: dict[str, str] = {
 READ_ONLY_VERIFIED: frozenset[str] = frozenset(
     {
         "health",
+        "doctor.memory.status",
         "status",
         "usage.status",
         "usage.cost",
@@ -275,6 +276,7 @@ READ_ONLY_VERIFIED: frozenset[str] = frozenset(
         "tts.providers",
         "config.get",
         "config.schema",
+        "config.schema.lookup",
         "models.list",
         "tools.catalog",
         "agents.list",
@@ -290,6 +292,7 @@ READ_ONLY_VERIFIED: frozenset[str] = frozenset(
         "cron.status",
         "cron.runs",
         "gateway.identity.get",
+        "agent.identity.get",
         "system-presence",
         "chat.history",
     }
@@ -399,6 +402,36 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
         "meaning": "批量预览会话；矩阵验证显示参数名是 keys，不是 sessionKey。",
         "known_good": {"keys": [DEFAULT_SESSION_KEY]},
     },
+    "agent.identity.get": {
+        "required": [],
+        "meaning": "读取当前默认 agent 身份信息；实测返回 agentId/name/avatar。",
+        "known_good": {},
+    },
+    "gateway.identity.get": {
+        "required": [],
+        "meaning": "读取 gateway 设备身份；返回 deviceId/publicKey 等公钥身份字段。",
+        "known_good": {},
+    },
+    "config.schema.lookup": {
+        "required": ["path"],
+        "meaning": "按路径查询配置 schema 子树；实测 path=browser 返回 browser 配置 schema/hint/children。",
+        "known_good": {"path": "browser"},
+    },
+    "doctor.memory.status": {
+        "required": [],
+        "meaning": "读取 agent memory/embedding 后端状态；只读诊断。",
+        "known_good": {},
+    },
+    "models.list": {
+        "required": [],
+        "meaning": "读取可用模型列表；只读。",
+        "known_good": {},
+    },
+    "tools.catalog": {
+        "required": [],
+        "meaning": "读取 agent 可用工具目录；实测返回 profiles/groups/tools。",
+        "known_good": {},
+    },
     "node.describe": {
         "required": ["nodeId"],
         "meaning": "查看指定 node 详情；矩阵验证显示必须提供 nodeId。",
@@ -428,7 +461,7 @@ EVENT_HINTS: dict[str, dict[str, Any]] = {
         "streams": {
             "lifecycle": "run 生命周期；data.phase=start/end，包含 startedAt/endedAt。",
             "assistant": "模型文本流；data.delta 为增量，data.text 为截至当前的累计文本。",
-            "tool": "工具调用流；用于确认 exec/process/write 等工具链已触发；常见 data.phase/result/isError/meta，完整 schema 需继续采样。",
+            "tool": "工具调用流；用于确认 exec/process/write 等工具链已触发；实测 data 包含 phase/name/toolCallId，start 阶段有 args，result 阶段有 isError/meta。",
         },
     },
     "chat": {
@@ -561,6 +594,17 @@ def summarize_openclaw_event(message: dict[str, Any]) -> dict[str, Any]:
                 "data_keys": sorted(data.keys()),
             }
         )
+        if payload.get("stream") == "tool":
+            args = data.get("args") if isinstance(data.get("args"), dict) else {}
+            meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+            result.update(
+                {
+                    "tool_name": data.get("name"),
+                    "tool_call_id_present": bool(data.get("toolCallId")),
+                    "args_keys": sorted(args.keys()),
+                    "meta_keys": sorted(meta.keys()),
+                }
+            )
     elif event_name == "chat":
         msg = payload.get("message") if isinstance(payload.get("message"), dict) else {}
         content = msg.get("content") if isinstance(msg.get("content"), list) else []

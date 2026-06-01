@@ -344,3 +344,20 @@ update.available
 - 对当前 mimo2api 的核心目标（bridge 注入、uid 节点池、API 转发）来说，OpenClaw 调用协议已经足够且稳定。
 - 对“完整 OpenClaw 协议实现”来说，已新增字段字典与协议目录，但 `tool` 子流、审批流、browser/node invoke 等仍需要继续实测补齐。
 - 本轮已经从猜测进入到基于 `hello-ok.features` 的协议矩阵阶段，后续应避免盲猜方法名，严格以服务端声明为准。
+
+## 第二轮深入验证补充（2026-06-01 22:49 Asia/Shanghai）
+
+在 `5a19c4b` 稳定点上已创建本地回退 tag：`rollback-openclaw-protocol-20260601`。随后继续验证：
+
+- `sessions.preview` 使用 `keys` 参数确认成功；
+- `agent.identity.get` 重新验证成功，之前失败确认为连接关闭时机问题，不是方法不存在；
+- `gateway.identity.get/models.list/tools.catalog/config.schema.lookup/doctor.memory.status` 均通过低影响验证；
+- 自动注入过程中捕获到真实 `events.agent.stream=tool` 样本，确认 tool 子流字段包括 `phase/name/toolCallId/args/isError/meta`；
+- 代码已只保存工具事件 schema 摘要，不保存工具参数、命令正文、meta 原文或 toolCallId 原值。
+
+新增/更新实现：
+
+- `READ_ONLY_VERIFIED` 补充 `doctor.memory.status/config.schema.lookup/agent.identity.get`；
+- `PARAMETER_HINTS` 补充 `agent.identity.get/gateway.identity.get/config.schema.lookup/doctor.memory.status/models.list/tools.catalog`；
+- `summarize_openclaw_event()` 增强 tool stream 摘要：`tool_name/tool_call_id_present/args_keys/meta_keys`；
+- 单元测试增加 tool event schema 防泄露验证。

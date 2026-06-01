@@ -281,3 +281,60 @@ mimo2api 当前判定：
 4. `browser.request`：需要单独验证 canvas/browser 能力边界和返回结构。
 5. `node.invoke.*`：需要确认 node pending 队列字段、ack/result 语义。
 6. `sessions.compact`：可与 `/v1/responses/compact` 进一步对齐，判断是否能直接使用 OpenClaw 内置 compact。
+
+## 10. 第二轮低影响验证补充（2026-06-01 22:49 Asia/Shanghai）
+
+本轮用一个已 AVAILABLE 的 sandbox 账号额外验证了以下只读/低影响方法，结果写入本地运行证据 `data/openclaw_deeper_probe_result.json`（`data/` 默认不提交）：
+
+| 方法 | 参数 | 结果 | 关键返回结构 |
+|---|---|---|---|
+| `sessions.preview` | `{"keys":["agent:main:main"]}` | OK | `ts`, `previews[]`, preview item 含 `key/status/items` |
+| `agent.identity.get` | `{}` | OK | `agentId`, `name`, `avatar` |
+| `gateway.identity.get` | `{}` | OK | `deviceId`, `publicKey` |
+| `models.list` | `{}` | OK | `models[]`, item 含 `id/name/provider/contextWindow/reasoning/input` |
+| `tools.catalog` | `{}` | OK | `agentId`, `profiles[]`, `groups[]` |
+| `config.schema.lookup` | `{"path":"browser"}` | OK | `path`, `schema`, `hint`, `children[]` |
+| `doctor.memory.status` | `{}` | OK | `agentId`, `provider`, `embedding` 状态 |
+
+因此代码侧已把这些方法加入 `READ_ONLY_VERIFIED` 或参数 hints。
+
+## 11. `events.agent.stream=tool` 第二轮字段补充
+
+重启后 manager 自动注入 bridge 时捕获到真实 tool stream 样本，已确认 tool 子流的安全 schema：
+
+| 字段 | 出现阶段 | 含义 |
+|---|---|---|
+| `data.phase` | `start/update/result` | 工具调用阶段 |
+| `data.name` | 全阶段 | 工具名，例如 exec/process/write 等，具体由 OpenClaw 工具目录决定 |
+| `data.toolCallId` | 全阶段 | 工具调用 ID；只记录是否存在，不落原值 |
+| `data.args` | `start` | 工具入参；只记录 key 列表，不落参数内容 |
+| `data.isError` | `result` | 工具结果是否错误 |
+| `data.meta` | `result` | 工具结果元数据；只记录 key 列表，不落内容 |
+
+`mimo2api.openclaw_protocol.summarize_openclaw_event()` 现在会额外输出：
+
+```json
+{
+  "tool_name": "...",
+  "tool_call_id_present": true,
+  "args_keys": ["..."],
+  "meta_keys": ["..."]
+}
+```
+
+注意：为避免泄露命令、文件内容或工具结果，摘要不会保存 `args`、`meta`、`toolCallId` 原文。
+
+## 12. 当前回退点
+
+本轮继续深入前已设置本地回退 tag：
+
+```text
+rollback-openclaw-protocol-20260601 -> 5a19c4b
+```
+
+若新变更导致问题，可回退：
+
+```bash
+git reset --hard rollback-openclaw-protocol-20260601
+docker compose up -d --build
+```

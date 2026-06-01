@@ -113,6 +113,7 @@ class OpenClawProtocolCatalogTests(unittest.TestCase):
         self.assertTrue(catalog["methods"]["agent"]["implemented_in_manager"])
         self.assertTrue(catalog["methods"]["agent"]["mutating_or_execution"])
         self.assertEqual(classify_method("sessions.list")["category"], "sessions")
+        self.assertTrue(classify_method("agent.identity.get")["read_only_verified"])
         self.assertEqual(classify_event("agent")["hint"]["streams"]["assistant"].startswith("模型文本流"), True)
 
     def test_hello_payload_summary_is_sanitized_and_counted(self):
@@ -164,3 +165,29 @@ class OpenClawEventSummaryTests(unittest.TestCase):
         self.assertEqual(summary["stream"], "assistant")
         self.assertEqual(summary["text_len"], len("secret text"))
         self.assertNotIn("secret text", str(summary))
+
+    def test_tool_event_summary_includes_safe_schema_fields(self):
+        from mimo2api.openclaw_protocol import summarize_openclaw_event
+
+        summary = summarize_openclaw_event({
+            "type": "event",
+            "event": "agent",
+            "payload": {
+                "runId": "run-1",
+                "stream": "tool",
+                "sessionKey": "agent:main:main",
+                "seq": 3,
+                "ts": 123,
+                "data": {
+                    "phase": "start",
+                    "name": "exec",
+                    "toolCallId": "call-secret",
+                    "args": {"cmd": "secret command"},
+                },
+            },
+        })
+        self.assertEqual(summary["tool_name"], "exec")
+        self.assertTrue(summary["tool_call_id_present"])
+        self.assertEqual(summary["args_keys"], ["cmd"])
+        self.assertNotIn("secret command", str(summary))
+        self.assertNotIn("call-secret", str(summary))
