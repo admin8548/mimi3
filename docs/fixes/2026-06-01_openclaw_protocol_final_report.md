@@ -375,3 +375,27 @@ update.available
 - `exec.approval.resolve`：参数为 `id/decision`；`decision=deny` 已确认为有效拒绝枚举，批准枚举仍需真实审批事件确认。
 
 代码已补充相应 `PARAMETER_HINTS` 与测试，`exec.approvals.get` 标记为只读已验证。
+
+## 有状态验证补充（approval / browser / session compact）
+
+本轮已按“先备份、后验证、再恢复”原则继续进行有状态验证：
+
+- 备份了 `exec.approvals.get`、`config.get`、`browser.request GET /`、`sessions.preview`、`agents.list`、`cron.list`、`node.list` 等状态到 `data/stateful_backups/openclaw_stateful_backup.json`。
+- 真实触发并清理了一条 approval：
+  - `exec.approval.request` 请求 `command=echo stateful_approval_probe`, `cwd=/tmp`
+  - 观察到 `exec.approval.requested` / `exec.approval.resolved`
+  - 使用 `exec.approval.resolve` + `decision=deny` 完成清理
+- 真实验证 browser 状态切换：
+  - `browser.request POST /start`
+  - `browser.request POST /stop`
+  - 启停状态恢复正常
+- 建立临时 session，验证 `sessions.compact` 的边界行为：
+  - `sessions.patch` 创建临时 session
+  - `sessions.compact` 返回 `compacted=false/reason=no transcript`
+  - `sessions.delete` 删除临时 session
+
+因此剩余结论进一步明确：
+
+1. `exec.approval.requested/resolved` 已真实可验证，并已补齐事件字段字典。
+2. `browser.request` 不只是状态查询，也支持 start/stop 控制。
+3. `sessions.compact` 仍不是 `/v1/responses/compact` 的直接后端对齐接口；它是内部 session 管理接口，只适合做 session 压缩维护，不适合替代 Codex Responses compact 输出。

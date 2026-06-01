@@ -448,9 +448,15 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
         "meaning": "等待指定 approval 决策；参数名是 id，不是 approvalId；未知/过期 id 返回 not found。",
         "known_good": {"id": "approval-id"},
     },
+    "exec.approval.request": {
+        "required": ["command"],
+        "optional": ["cwd", "nodeId", "host", "security", "ask", "agentId", "resolvedPath", "sessionKey"],
+        "meaning": "发起审批请求；实测 request payload 会嵌套 command/cwd/nodeId/host/security/ask/agentId 等字段，返回 awaitable approval id。",
+        "known_good": {"command": "echo probe", "cwd": "/tmp"},
+    },
     "exec.approval.resolve": {
         "required": ["id", "decision"],
-        "meaning": "解析审批请求；实测 decision=deny 是有效枚举，未知 id 返回 unknown/expired；其它决策值仍待真实审批事件确认。",
+        "meaning": "解析审批请求；实测 decision=deny 是有效枚举，未知 id 返回 unknown/expired；真实 requested/resolved 事件已观察到。",
         "known_good": {"id": "approval-id", "decision": "deny"},
     },
     "browser.request": {
@@ -512,8 +518,25 @@ EVENT_HINTS: dict[str, dict[str, Any]] = {
     "tick": {"meaning": "服务端周期 tick。"},
     "cron": {"meaning": "cron 任务状态或运行事件。"},
     "node.invoke.request": {"meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列。"},
-    "exec.approval.requested": {"meaning": "工具/exec 审批请求；对应 exec.approval.resolve。"},
-    "exec.approval.resolved": {"meaning": "审批完成事件。"},
+    "exec.approval.requested": {
+        "meaning": "审批请求已创建。",
+        "payload_fields": {
+            "id": "approval id；用于 exec.approval.waitDecision/resolve。",
+            "request": "原始审批请求对象。",
+            "createdAtMs": "创建时间毫秒。",
+            "expiresAtMs": "过期时间毫秒。",
+        },
+    },
+    "exec.approval.resolved": {
+        "meaning": "审批已解析。",
+        "payload_fields": {
+            "id": "approval id。",
+            "decision": "最终决策，例如 deny。",
+            "resolvedBy": "解析来源，实测为 cli。",
+            "ts": "解析时间毫秒。",
+            "request": "原始审批请求对象。",
+        },
+    },
 }
 
 ENVELOPE_FIELD_DICTIONARY: dict[str, str] = {

@@ -115,9 +115,11 @@ class OpenClawProtocolCatalogTests(unittest.TestCase):
         self.assertEqual(classify_method("sessions.list")["category"], "sessions")
         self.assertTrue(classify_method("agent.identity.get")["read_only_verified"])
         self.assertTrue(classify_method("exec.approvals.get")["read_only_verified"])
+        self.assertEqual(classify_method("exec.approval.request")["parameter_hint"]["required"], ["command"])
         self.assertEqual(classify_method("browser.request")["parameter_hint"]["required"], ["method", "path"])
         self.assertEqual(classify_method("sessions.compact")["parameter_hint"]["required"], ["key"])
         self.assertEqual(classify_event("agent")["hint"]["streams"]["assistant"].startswith("模型文本流"), True)
+        self.assertIn("request", classify_event("exec.approval.requested")["hint"]["payload_fields"])
 
     def test_hello_payload_summary_is_sanitized_and_counted(self):
         from mimo2api.openclaw_protocol import summarize_hello_payload

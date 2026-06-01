@@ -459,3 +459,82 @@ path, exists, hash, file.version, file.socket.path, file.defaults, file.agents
 - 实测 `decision=deny` 是有效枚举，未知 id 返回 `unknown or expired approval id`；
 - `approve/allow/reject/yes/no` 等均返回 `invalid decision`；
 - 允许/批准侧枚举仍需等待真实 `exec.approval.requested` 事件后再确认。
+
+## 14. 有状态验证补充（approval / browser / session compact）
+
+### 14.1 真实 approval 事件
+
+已在授权 sandbox 中真实触发并清理一条审批：
+
+- 请求方法：`exec.approval.request`
+- 请求内容：`command=echo stateful_approval_probe`, `cwd=/tmp`
+- 观察到事件：
+  - `exec.approval.requested`
+  - `exec.approval.resolved`
+- 解析方式：`exec.approval.resolve`，`decision=deny`
+- 清理结果：审批请求已显式 deny，未残留未处理状态
+
+实际 `exec.approval.requested` payload 关键字段：
+
+```text
+id, request, createdAtMs, expiresAtMs
+```
+
+实际 `exec.approval.resolved` payload 关键字段：
+
+```text
+id, decision, resolvedBy, ts, request
+```
+
+其中 `request` 中可见：
+
+```text
+command, cwd, nodeId, host, security, ask, agentId, resolvedPath, sessionKey, turnSource*
+```
+
+结论：approval 流已可真实触发、观察、解析并清理。
+
+### 14.2 真实 browser 进程状态切换
+
+已验证 `browser.request` 支持状态切换：
+
+```json
+{"method":"POST","path":"/start"}
+{"method":"POST","path":"/stop"}
+```
+
+观察到：
+
+- `GET /`：返回 runtime 状态；
+- `POST /start`：返回 `ok=true, profile=openclaw`；
+- `GET /` 之后显示：
+  - `running=true`
+  - `cdpReady=true`
+  - `cdpHttp=true`
+  - `pid` 非空
+  - `userDataDir` 已创建
+- `POST /stop`：返回 `ok=true, stopped=true`；
+- 之后 runtime 恢复为 `running=false`。
+
+`/json/version` 与 `/json/list` 在本轮未启动出可访问的浏览器 CDP HTTP 路径，仍返回 `Not Found`，说明 browser 运行管理和 CDP 暴露是两层不同状态。
+
+### 14.3 `sessions.compact` 的真实行为边界
+
+本轮建立临时 session 并执行：
+
+```json
+{"key":"agent:main:tmp:stateful-compact-probe2"}
+```
+
+结果：
+
+- `sessions.patch` 可创建/更新 session 入口；
+- `sessions.compact` 在该临时 session 上返回：
+  - `ok=true`
+  - `compacted=false`
+  - `reason=no transcript`
+- `sessions.delete` 可清理临时 session。
+
+同时，`sessions.compact` 的真实参数仍然只有 `key`，不接受 `sessionKey/keys/dryRun`。
+
+结论：`sessions.compact` 是 OpenClaw 内部 session 管理接口，不是 Codex `/v1/responses/compact` 的直接替代；它只能作为内部历史维护工具参考。
