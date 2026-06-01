@@ -399,3 +399,14 @@ update.available
 1. `exec.approval.requested/resolved` 已真实可验证，并已补齐事件字段字典。
 2. `browser.request` 不只是状态查询，也支持 start/stop 控制。
 3. `sessions.compact` 仍不是 `/v1/responses/compact` 的直接后端对齐接口；它是内部 session 管理接口，只适合做 session 压缩维护，不适合替代 Codex Responses compact 输出。
+
+## 继续推进补充：agents.files / cron / config / node
+
+本轮继续做了更多可恢复验证：
+
+- `agents.files.list/get/set`：确认目标是固定 workspace 文件名，`AGENTS.md` / `HEARTBEAT.md` / `TOOLS.md` / `IDENTITY.md` 可读；临时文件名会返回 `unsupported file`，因此不做任意文件写入。
+- `cron.add`：确认真实 schema 为 `name + schedule + sessionTarget + payload`；`schedule` 支持 `kind=cron|every` 两类；已成功创建并删除临时 cron job。
+- `config.patch/apply/set`：确认都需要 `raw` 和 `baseHash`；仅改同内容会更新 `meta.lastTouchedAt`，因此恢复时需接受时间戳变化。
+- `node.invoke.*`：确认 `node.invoke` 真正参数是 `nodeId + command + idempotencyKey`；`node.pending.pull/ack/invoke.result/node.event` 在 operator role 下被拒绝，说明完整 node 状态机需要 node role 或真实 node 连接，当前暂未跑通。
+
+这些结论已同步到 `mimo2api/openclaw_protocol.py` 和字段字典文档。

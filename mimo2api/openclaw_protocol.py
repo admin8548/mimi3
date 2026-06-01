@@ -282,6 +282,7 @@ READ_ONLY_VERIFIED: frozenset[str] = frozenset(
         "tools.catalog",
         "agents.list",
         "agents.files.list",
+        "agents.files.get",
         "skills.status",
         "voicewake.get",
         "sessions.list",
@@ -433,6 +434,21 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
         "meaning": "读取 agent 可用工具目录；实测返回 profiles/groups/tools。",
         "known_good": {},
     },
+    "agents.files.list": {
+        "required": ["agentId"],
+        "meaning": "列出指定 agent workspace 支持的固定文件；实测返回 workspace 与 files[]。",
+        "known_good": {"agentId": DEFAULT_AGENT_ID},
+    },
+    "agents.files.get": {
+        "required": ["agentId", "name"],
+        "meaning": "读取指定 agent workspace 固定文件内容；参数是 name，不是 path；实测支持 AGENTS.md/HEARTBEAT.md 等。",
+        "known_good": {"agentId": DEFAULT_AGENT_ID, "name": "AGENTS.md"},
+    },
+    "agents.files.set": {
+        "required": ["agentId", "name", "content"],
+        "meaning": "写入指定 agent workspace 固定文件；只允许受支持的 name，任意临时文件名会返回 unsupported file。",
+        "known_good": {"agentId": DEFAULT_AGENT_ID, "name": "HEARTBEAT.md", "content": "..."},
+    },
     "exec.approvals.get": {
         "required": [],
         "meaning": "读取全局 exec approval 配置；实测返回 path/exists/hash/file，file 含 version/socket/defaults/agents。",
@@ -461,13 +477,74 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "browser.request": {
         "required": ["method", "path"],
-        "meaning": "向 OpenClaw browser/cdp 管理端发请求；GET / 返回 browser runtime 状态，/json/version 在浏览器未运行时返回 Not Found。",
+        "meaning": "向 OpenClaw browser 管理端发请求；GET / 返回 runtime 状态；POST /start 与 POST /stop 可启停 browser；CDP /json/* 路径未直接暴露。",
         "known_good": {"method": "GET", "path": "/"},
+    },
+    "config.patch": {
+        "required": ["raw", "baseHash"],
+        "meaning": "基于 config.get 返回的 raw/baseHash 写入配置；即使同内容也会更新 meta.lastTouchedAt，恢复需用备份 raw + 当前 baseHash。",
+        "known_good": {"raw": "...", "baseHash": "hash-from-config.get"},
+    },
+    "config.apply": {
+        "required": ["raw", "baseHash"],
+        "meaning": "应用 raw 配置并可能触发 restart/sentinel；也要求 baseHash。",
+        "known_good": {"raw": "...", "baseHash": "hash-from-config.get"},
+    },
+    "config.set": {
+        "required": ["raw", "baseHash"],
+        "meaning": "设置完整 raw 配置；schema 要求 raw，实际并发保护也要求 baseHash。",
+        "known_good": {"raw": "...", "baseHash": "hash-from-config.get"},
+    },
+    "cron.add": {
+        "required": ["name", "schedule", "sessionTarget", "payload"],
+        "meaning": "创建 cron job；schedule 支持 {kind:cron,expr} 或 {kind:every,everyMs}，payload 是对象，服务端会补 payload.kind=agentTurn。",
+        "known_good": {"name": "probe", "schedule": {"kind": "cron", "expr": "0 0 1 1 *"}, "sessionTarget": "none", "payload": {"message": "probe"}},
+    },
+    "cron.update": {
+        "required": ["jobId", "patch"],
+        "meaning": "更新 cron job；未知 jobId 返回 unknown cron job id。",
+        "known_good": {"jobId": "cron-job-id", "patch": {"enabled": False}},
+    },
+    "cron.remove": {
+        "required": ["jobId"],
+        "meaning": "删除 cron job；不存在时返回 ok=true/removed=false。",
+        "known_good": {"jobId": "cron-job-id"},
+    },
+    "cron.run": {
+        "required": ["id"],
+        "meaning": "手动运行 cron job；未知 id 返回 unknown cron job id。",
+        "known_good": {"id": "cron-job-id"},
     },
     "sessions.compact": {
         "required": ["key"],
         "meaning": "压缩指定 session；参数名是 key，不接受 sessionKey/keys/dryRun；不存在 key 返回 compacted=false/reason=no sessionId。",
         "known_good": {"key": DEFAULT_SESSION_KEY},
+    },
+    "node.pending.enqueue": {
+        "required": ["nodeId", "type"],
+        "meaning": "向 node pending 队列入队；operator 角色可见 schema，但完整 payload 仍需真实 node。",
+        "known_good": {"nodeId": "node-id", "type": "..."},
+    },
+    "node.invoke": {
+        "required": ["nodeId", "command", "idempotencyKey"],
+        "meaning": "调用 node 命令；参数是 command/idempotencyKey，不是 method；当前环境 node.list 为空，未跑通真实 invoke。",
+        "known_good": {"nodeId": "node-id", "command": "...", "idempotencyKey": "uuid"},
+    },
+    "node.pending.pull": {
+        "required": [],
+        "meaning": "node 侧拉取 pending 队列；operator 角色 unauthorized，需 node role。",
+    },
+    "node.pending.ack": {
+        "required": [],
+        "meaning": "node 侧 ack pending 项；operator 角色 unauthorized，需 node role。",
+    },
+    "node.invoke.result": {
+        "required": [],
+        "meaning": "node 侧提交 invoke 结果；operator 角色 unauthorized，需 node role。",
+    },
+    "node.event": {
+        "required": [],
+        "meaning": "node 侧上报事件；operator 角色 unauthorized，需 node role。",
     },
     "node.describe": {
         "required": ["nodeId"],

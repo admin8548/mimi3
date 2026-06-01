@@ -538,3 +538,94 @@ command, cwd, nodeId, host, security, ask, agentId, resolvedPath, sessionKey, tu
 同时，`sessions.compact` 的真实参数仍然只有 `key`，不接受 `sessionKey/keys/dryRun`。
 
 结论：`sessions.compact` 是 OpenClaw 内部 session 管理接口，不是 Codex `/v1/responses/compact` 的直接替代；它只能作为内部历史维护工具参考。
+
+## 15. 下一轮推进中补齐的 schema 结果（agents.files / cron / config / node）
+
+### 15.1 `agents.files.*`
+
+真实验证结果：
+
+- `agents.files.list` 需要 `agentId`
+- `agents.files.get` 需要 `agentId + name`
+- `agents.files.set` 需要 `agentId + name + content`
+- `name` 是固定文件名，不是 `path`
+- 任意临时文件名如 `STATEFUL_PROBE.tmp` 会返回 `unsupported file`
+
+实测可读取：
+
+- `AGENTS.md`
+- `HEARTBEAT.md`
+- `TOOLS.md`
+- `IDENTITY.md`
+
+结论：`agents.files.get`/`set` 的目标是预定义 workspace 文档文件，不是任意文件系统路径。
+
+### 15.2 `cron.*`
+
+`cron.add` 真实 schema：
+
+```text
+name, schedule, sessionTarget, payload
+```
+
+`schedule` 支持：
+
+- `{kind: "cron", expr: "..."}`
+- `{kind: "every", everyMs: ...}`
+
+真实返回会补充：
+
+- `id`
+- `enabled`
+- `createdAtMs`
+- `updatedAtMs`
+- `wakeMode`
+- `delivery.mode`
+- `state.nextRunAtMs`
+- `payload.kind=agentTurn`
+
+`cron.remove`：
+
+- 需要 `jobId`
+- 删除成功返回 `removed=true`
+- 不存在返回 `removed=false`
+
+`cron.run`：
+
+- 需要 `id`
+- 未知 id 返回 `unknown cron job id`
+
+`cron.update`：
+
+- 需要 `jobId + patch`
+
+### 15.3 `config.patch/apply/set`
+
+已确认：
+
+- 三者都需要 `raw`
+- `config.patch` 还需要 `baseHash`
+- `config.apply` 也需要 `baseHash`
+- `config.set` 也需要 `baseHash`
+
+行为：
+
+- 仅改同内容也会更新 `meta.lastTouchedAt`
+- 还原时需使用备份 `raw` + 当前 `baseHash`
+
+### 15.4 `node.invoke.*`
+
+已确认：
+
+- `node.invoke` 需要 `nodeId + command + idempotencyKey`
+- 不是 `method` 参数
+- `node.pending.enqueue` 需要 `nodeId + type`
+- `node.pending.pull/ack/invoke.result/node.event` 在 operator role 下会触发 `unauthorized role: operator`
+- 当前 `node.list` 结果为空，因此尚未跑通真实 node invoke 状态机
+
+### 15.5 `agents.files` / `cron` / `config` / `node` 的处理状态
+
+- `agents.files.get`：已发现；尚未做写入恢复，因为受限于支持文件白名单。
+- `cron.add/run/remove`：已确认可创建临时 cron 并删除。
+- `config.patch/apply`：已确认 baseHash 机制，恢复策略已掌握。
+- `node.invoke.*`：仍未有真实 node 目标，因此未完成完整闭环。
