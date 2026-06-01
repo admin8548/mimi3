@@ -84,6 +84,7 @@ def _json_error(message: str, status_code: int, error_type: str = "server_error"
 manager_bg_task = None
 metrics_persist_task = None
 sweeper_bg_task = None
+legacy_sweeper_task = None
 single_process_lock_file = None
 STALE_QUEUE_TTL = 300
 SHUTDOWN_TASK_TIMEOUT = float(os.getenv("MIMO_SHUTDOWN_TASK_TIMEOUT", "5"))
@@ -110,6 +111,30 @@ async def sweep_stale_queues():
             break
         except Exception as e:
             logger.error(f"清理死锁队列任务发生异常: {e}")
+
+
+async def sweep_legacy_uidless_clients():
+    """Strict-mode cleanup: once uid-bearing nodes exist, retire legacy uid=<none> sockets."""
+    while True:
+        try:
+            await asyncio.sleep(30)
+            if ALLOW_LEGACY_WS_FALLBACK:
+                continue
+            if not state.active_clients:
+                continue
+            uid_clients = [client for client in state.active_clients if state.client_uids.get(id(client))]
+            if not uid_clients:
+                continue
+            legacy_clients = [client for client in list(state.active_clients) if not state.client_uids.get(id(client))]
+            if not legacy_clients:
+                continue
+            for client in legacy_clients:
+                await retire_client(client, "legacy uid=<none> connection retired; uid pool available")
+            logger.info(f"🧹 已清退 {len(legacy_clients)} 个 legacy uid=<none> 连接，当前仅保留 uid 节点")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"清理 legacy 节点任务发生异常: {e}")
 
 
 async def close_active_clients() -> None:
@@ -143,9 +168,10 @@ async def cancel_and_wait_tasks(tasks: list[asyncio.Task | None], *, label: str)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global manager_bg_task, metrics_persist_task, sweeper_bg_task
+    global manager_bg_task, metrics_persist_task, sweeper_bg_task, legacy_sweeper_task
     logger.info("🚀 正在拉起挂后台的 Claw 账号守护线程...")
     acquire_single_process_lock()
+    log_key_routes()
 
     await asyncio.to_thread(init_metrics_db)
     fixed = await asyncio.to_thread(reclassify_history)
@@ -155,13 +181,14 @@ async def lifespan(app: FastAPI):
     manager_bg_task = asyncio.create_task(start_manager_tasks(), name="mimo-manager")
     metrics_persist_task = asyncio.create_task(metrics_history_worker(), name="mimo-metrics")
     sweeper_bg_task = asyncio.create_task(sweep_stale_queues(), name="mimo-sweeper") # 启动巡检死神
+    legacy_sweeper_task = asyncio.create_task(sweep_legacy_uidless_clients(), name="mimo-legacy-sweeper")
     
     yield
 
     try:
         await close_active_clients()
         await cancel_and_wait_tasks(
-            [manager_bg_task, metrics_persist_task, sweeper_bg_task],
+            [manager_bg_task, metrics_persist_task, sweeper_bg_task, legacy_sweeper_task],
             label="核心后台任务",
         )
         await cancel_and_wait_tasks(list(_background_tasks), label="转发清理任务")
@@ -169,6 +196,7 @@ async def lifespan(app: FastAPI):
         manager_bg_task = None
         metrics_persist_task = None
         sweeper_bg_task = None
+        legacy_sweeper_task = None
         release_single_process_lock()
 
 app = FastAPI(lifespan=lifespan)
@@ -185,8 +213,26 @@ NODE_RESPONSE_TIMEOUT = 30
 MAX_RETRIES = 3
 MAX_PENDING_QUEUES = 2000
 AI_ROUTE_PREFIXES = ("/v1/", "/anthropic/v1/")
-WEBUI_PUBLIC_PATHS = {"/", "/api/auth/session", "/api/auth/login", "/api/auth/logout", "/api/stats", "/api/status/history", "/webui"}
+WEBUI_PUBLIC_PATHS = {
+    "/",
+    "/api/auth/session",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/stats",
+    "/api/diagnostics/routes",
+    "/api/status/history",
+    "/webui",
+}
 PREFERRED_UID = os.getenv("MIMO_PREFERRED_UID", "").strip()
+ALLOW_LEGACY_WS_FALLBACK = os.getenv("MIMO_ALLOW_LEGACY_WS_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+KEY_DIAGNOSTIC_ROUTES = {
+    "/v1/chat/completions",
+    "/v1/responses",
+    "/v1/responses/compact",
+    "/v1/responses/compact/",
+    "/anthropic/v1/messages",
+    "/v1/models",
+}
 
 if is_ai_auth_enabled():
     logger.info("🔐 AI API 鉴权已启用")
@@ -200,6 +246,37 @@ def is_ai_route(path: str) -> bool:
 
 def is_webui_route(path: str) -> bool:
     return path.startswith("/api/") and path not in WEBUI_PUBLIC_PATHS
+
+
+def build_route_diagnostics() -> dict[str, Any]:
+    routes: list[dict[str, Any]] = []
+    present: dict[str, list[str]] = {}
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = sorted(getattr(route, "methods", []) or [])
+        name = getattr(route, "name", "")
+        if not path:
+            continue
+        routes.append({"path": path, "methods": methods, "name": name})
+        present.setdefault(path, [])
+        present[path] = sorted(set(present[path]) | set(methods))
+    return {
+        "generated_at": int(time.time()),
+        "key_routes": {
+            path: {"present": path in present, "methods": present.get(path, [])}
+            for path in sorted(KEY_DIAGNOSTIC_ROUTES)
+        },
+        "routes": sorted(routes, key=lambda item: (item["path"], item["methods"])),
+    }
+
+
+def log_key_routes() -> None:
+    diagnostics = build_route_diagnostics()
+    summary = "; ".join(
+        f"{path}={','.join(info['methods']) if info['present'] else 'MISSING'}"
+        for path, info in diagnostics["key_routes"].items()
+    )
+    logger.info(f"🧭 关键路由诊断: {summary}")
 
 
 @app.middleware("http")
@@ -456,6 +533,10 @@ async def api_rebuild():
 async def api_stats():
     return JSONResponse(content=build_gateway_stats(len(_background_tasks)))
 
+@app.get("/api/diagnostics/routes")
+async def api_diagnostics_routes():
+    return JSONResponse(content=build_route_diagnostics())
+
 @app.get("/api/status/history")
 async def api_status_history(hours: int = 24):
     hours = max(1, min(hours, 24 * METRICS_RETENTION_DAYS))
@@ -526,7 +607,15 @@ async def ws_tunnel(ws: WebSocket):
     await ws.accept()
     client_addr = f"{ws.client.host}:{ws.client.port}" if ws.client else "Unknown"
     uid = (ws.query_params.get("uid") or "").strip()
+    if not uid and not ALLOW_LEGACY_WS_FALLBACK and any(state.client_uids.values()):
+        logger.warning(f"🚫 拒绝新的 legacy uid=<none> 连接: addr={client_addr}，因 uid 节点已存在")
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        return
     state.active_clients.append(ws)
+    state.client_connected_at[id(ws)] = time.time()
     if uid:
         state.client_uids[id(ws)] = uid
     state.client_cooldowns.pop(id(ws), None)
@@ -549,6 +638,7 @@ async def ws_tunnel(ws: WebSocket):
         if ws in state.active_clients:
             state.active_clients.remove(ws)
         state.client_uids.pop(id(ws), None)
+        state.client_connected_at.pop(id(ws), None)
         state.client_cooldowns.pop(id(ws), None)
         
         # 清理该节点的所有孤儿队列
@@ -570,16 +660,14 @@ async def ws_tunnel(ws: WebSocket):
         logger.info(f"当前在线节点数: {len(state.active_clients)}")
 
 
-def get_next_client(preferred_uid: str | None = None) -> WebSocket | None:
-    if not state.active_clients:
-        return None
+def get_available_dispatch_clients(preferred_uid: str | None = None) -> list[WebSocket]:
     now = time.time()
     available_clients: list[WebSocket] = []
     for client in state.active_clients:
         if state.client_cooldowns.get(id(client), 0) <= now:
             available_clients.append(client)
     if not available_clients:
-        return None
+        return []
 
     preferred_uid = (preferred_uid or "").strip()
     if preferred_uid:
@@ -588,18 +676,32 @@ def get_next_client(preferred_uid: str | None = None) -> WebSocket | None:
             if state.client_uids.get(id(client)) == preferred_uid
         ]
         if preferred_clients:
-            return preferred_clients[0]
+            return preferred_clients
 
-    if state.current_client_index >= len(available_clients):
+    uid_clients = [client for client in available_clients if state.client_uids.get(id(client))]
+    if uid_clients:
+        return uid_clients
+
+    if ALLOW_LEGACY_WS_FALLBACK:
+        return available_clients
+
+    return []
+
+
+def get_next_client(preferred_uid: str | None = None) -> WebSocket | None:
+    dispatch_clients = get_available_dispatch_clients(preferred_uid)
+    if not dispatch_clients:
+        return None
+
+    if state.current_client_index >= len(dispatch_clients):
         state.current_client_index = 0
-    client = available_clients[state.current_client_index]
-    state.current_client_index = (state.current_client_index + 1) % len(available_clients)
+    client = dispatch_clients[state.current_client_index]
+    state.current_client_index = (state.current_client_index + 1) % len(dispatch_clients)
     return client
 
 
 def get_available_client_count() -> int:
-    now = time.time()
-    return sum(1 for c in state.active_clients if state.client_cooldowns.get(id(c), 0) <= now)
+    return len(get_available_dispatch_clients(PREFERRED_UID))
 
 
 def touch_pending_request(req_id: str) -> None:
@@ -644,6 +746,7 @@ async def retire_client(ws: WebSocket, reason: str) -> None:
     if ws in state.active_clients:
         state.active_clients.remove(ws)
     state.client_uids.pop(id(ws), None)
+    state.client_connected_at.pop(id(ws), None)
     state.client_cooldowns.pop(id(ws), None)
     for req_id in list(state.ws_to_req_ids.get(id(ws), set())):
         q = state.pending_queues.get(req_id)
@@ -708,6 +811,7 @@ async def dispatch_to_node(*, method: str, path: str, body: str, log_label: str,
         if target_ws in state.active_clients:
             state.active_clients.remove(target_ws)
         state.client_uids.pop(id(target_ws), None)
+        state.client_connected_at.pop(id(target_ws), None)
         state.client_cooldowns.pop(id(target_ws), None)
         return None
 
@@ -906,7 +1010,7 @@ async def handle_compaction_request(req_body: dict[str, Any], *, route_key: str,
     except Exception as exc:
         record_error(route_key, 400, f"compact 请求转换失败: {exc}")
         record_request_finished(route_key=route_key, status_code=400, started_at=request_started_at, first_byte_at=None, success=False)
-        return JSONResponse({"error": {"message": f"compact 请求转换失败: {exc}"}}, status_code=400)
+        return _json_error(f"compact 请求转换失败: {exc}", 400, "invalid_request_error")
 
     model = chat_req.get("model", "")
     body_text = apply_model_mapping(json.dumps(chat_req, ensure_ascii=False))
@@ -1108,7 +1212,7 @@ async def responses_handler(request: Request):
         req_body = json.loads(body.decode("utf-8", "ignore").lstrip("\ufeff"))
     except Exception as exc:
         record_error("/v1/responses", 400, f"请求解析失败: {exc}")
-        return JSONResponse({"error": {"message": f"请求解析失败: {exc}"}}, status_code=400)
+        return _json_error(f"请求解析失败: {exc}", 400, "invalid_request_error")
 
     if _is_compaction_trigger_request(req_body):
         # Codex remote compaction v2 sends a normal /v1/responses stream with a
@@ -1125,7 +1229,7 @@ async def responses_handler(request: Request):
         chat_req = responses_convert_request(req_body)
     except Exception as exc:
         record_error("/v1/responses", 400, f"请求解析/转换失败: {exc}")
-        return JSONResponse({"error": {"message": f"请求解析失败: {exc}"}}, status_code=400)
+        return _json_error(f"请求解析失败: {exc}", 400, "invalid_request_error")
 
     model = chat_req.get("model", "")
     is_streaming = chat_req.get("stream", False) is True
@@ -1262,6 +1366,7 @@ async def responses_handler(request: Request):
 
 
 @app.post("/v1/responses/compact")
+@app.post("/v1/responses/compact/", include_in_schema=False)
 async def responses_compact_handler(request: Request):
     """Codex/OpenAI Responses compact endpoint compatibility."""
     body = await request.body()
@@ -1269,7 +1374,7 @@ async def responses_compact_handler(request: Request):
         req_body = json.loads(body.decode("utf-8", "ignore").lstrip("\ufeff"))
     except Exception as exc:
         record_error("/v1/responses/compact", 400, f"请求解析失败: {exc}")
-        return JSONResponse({"error": {"message": f"请求解析失败: {exc}"}}, status_code=400)
+        return _json_error(f"请求解析失败: {exc}", 400, "invalid_request_error")
     # The compact sub-endpoint is non-streaming and must return:
     # {"output":[{"type":"compaction","encrypted_content":"..."}]}
     return await handle_compaction_request(req_body, route_key="/v1/responses/compact", stream=False)

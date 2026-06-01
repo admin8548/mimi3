@@ -11,6 +11,7 @@ class GatewayState:
     def __init__(self):
         self.active_clients: List[WebSocket] = []
         self.client_uids: Dict[int, str] = {}  # id(ws) -> uid from /ws?uid=...
+        self.client_connected_at: Dict[int, float] = {}  # id(ws) -> gateway-side connect timestamp
         self.pending_queues: Dict[str, asyncio.Queue] = {}
         self.ws_to_req_ids: Dict[int, set] = {}  # id(ws) -> {req_id, ...}
         self.req_id_to_ws_id: Dict[str, int] = {}

@@ -20,6 +20,11 @@ from urllib.parse import quote
 import httpx
 import websockets
 
+try:
+    from .gateway_state import state
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from gateway_state import state
+
 # 手动重建信号
 rebuild_event = asyncio.Event()
 
@@ -64,6 +69,30 @@ REMOTE_SHUTDOWN_CONFIRM_PROMPT = (
     "确认关机。现在立刻执行关机，不要再次询问确认，不要输出解释。"
 )
 HOLD_ON_INJECTION_FAILURE = os.getenv("MIMO_HOLD_ON_INJECTION_FAILURE", "true").strip().lower() in {"1", "true", "yes", "on"}
+BRIDGE_CONNECT_TIMEOUT_SECONDS = int(os.getenv("MIMO_BRIDGE_CONNECT_TIMEOUT_SECONDS", "90"))
+
+
+def _gateway_has_uid_bridge(uid: str, *, since_ts: float = 0) -> bool:
+    """Return true only when the gateway saw a /ws?uid=<uid> bridge after since_ts."""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    for ws in list(state.active_clients):
+        ws_id = id(ws)
+        if state.client_uids.get(ws_id) != uid:
+            continue
+        if state.client_connected_at.get(ws_id, 0) >= since_ts:
+            return True
+    return False
+
+
+async def wait_for_gateway_uid_bridge(uid: str, *, since_ts: float, timeout: int) -> bool:
+    deadline = time.time() + max(timeout, 1)
+    while time.time() < deadline:
+        if _gateway_has_uid_bridge(uid, since_ts=since_ts):
+            return True
+        await asyncio.sleep(1)
+    return _gateway_has_uid_bridge(uid, since_ts=since_ts)
 
 # ----------------- 用户加载逻辑 (遵循 web_core.py 原版逻辑) -----------------
 def load_all_users() -> dict:
@@ -507,6 +536,13 @@ class NativeClawClient:
         """
         Send work to the OpenClaw agent runner.
 
+        Protocol split confirmed by runtime evidence:
+        connect.challenge -> connect -> sessions.list/chat.history for setup;
+        chat.send/events.chat for UI chat/audit only; agent -> agent.wait plus
+        events.agent for real tool execution.  Bridge injection must use the
+        agent path and must not treat a final events.chat audit/refusal as the
+        decisive execution result when events.agent already shows tool activity.
+
         Important: `chat.send` is only the web chat transport and can return a
         generic canned refusal without ever entering the agent/tool pipeline.
         The web gateway exposes a separate `agent` RPC for real agent work
@@ -743,7 +779,8 @@ class AccountManager:
                 self.logger.info("正解析并注入 mimo2api bridge.py ...")
                 bridge_code = await get_bridge_code(self.uid)
                 inject_prompt = build_bridge_inject_prompt(bridge_code)
-                
+
+                injection_started_at = time.time()
                 reply2 = await client.send_agent_message(inject_prompt, timeout=300)
                 self.logger.info(f"[桥接脚本运行反馈]: {reply2}")
                 if _bridge_reply_looks_failed(reply2):
@@ -753,6 +790,37 @@ class AccountManager:
                         await interruptible_sleep(120)
                         continue
                     self.logger.warning("桥接脚本注入反馈疑似失败/拒答，本轮不再挂起，回到生命周期起点重建。")
+                    await client.close()
+                    await asyncio.sleep(10)
+                    continue
+
+                # The agent/tool stream is necessary but not sufficient: only a
+                # fresh gateway-side /ws?uid=<uid> connection proves bridge.py
+                # really started and reached this relay.  This avoids counting
+                # partial agent execution or legacy uid=<none> sockets as a
+                # successful pool member.
+                self.logger.info(
+                    f"agent 工具链已触发，等待网关观测到 /ws?uid={self.uid} "
+                    f"新连接（timeout={BRIDGE_CONNECT_TIMEOUT_SECONDS}s）..."
+                )
+                bridge_connected = await wait_for_gateway_uid_bridge(
+                    self.uid,
+                    since_ts=injection_started_at,
+                    timeout=BRIDGE_CONNECT_TIMEOUT_SECONDS,
+                )
+                if not bridge_connected:
+                    if HOLD_ON_INJECTION_FAILURE:
+                        self.logger.warning(
+                            f"桥接脚本未在 {BRIDGE_CONNECT_TIMEOUT_SECONDS}s 内接入网关 /ws?uid={self.uid}；"
+                            "保留实例并稍后重试注入，不误判为成功。"
+                        )
+                        await client.close()
+                        await interruptible_sleep(120)
+                        continue
+                    self.logger.warning(
+                        f"桥接脚本未在 {BRIDGE_CONNECT_TIMEOUT_SECONDS}s 内接入网关 /ws?uid={self.uid}；"
+                        "本轮回到生命周期起点重建。"
+                    )
                     await client.close()
                     await asyncio.sleep(10)
                     continue

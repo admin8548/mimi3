@@ -19,7 +19,10 @@ METRICS_SNAPSHOT_INTERVAL = 60  # 每 60 秒保存一次
 
 
 def node_label(ws: WebSocket) -> str:
-    return ws.client.host if ws.client else "Unknown"
+    host = ws.client.host if ws.client else "Unknown"
+    from .gateway_state import state
+    uid = state.client_uids.get(id(ws), "")
+    return f"{uid}@{host}" if uid else host
 
 
 def _bump_counter(bucket: dict[str, Any], key: str, amount: int = 1) -> None:
@@ -537,6 +540,9 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
     now = time.time()
     nodes: list[dict[str, Any]] = []
     available_clients = 0
+    uid_clients = 0
+    legacy_clients = 0
+    uid_counts: dict[str, int] = {}
     metrics = state.metrics
 
     for index, client in enumerate(state.active_clients):
@@ -547,13 +553,23 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
 
         tracked_req_ids = state.ws_to_req_ids.get(id(client), set())
         node_key = node_label(client)
+        uid = state.client_uids.get(id(client), "")
+        connected_at = state.client_connected_at.get(id(client), now)
+        if uid:
+            uid_clients += 1
+            uid_counts[uid] = uid_counts.get(uid, 0) + 1
+        else:
+            legacy_clients += 1
         node_metrics = metrics["nodes"].get(node_key, {})
         node_attempt_total = int(node_metrics.get("attempts_total", 0))
         nodes.append({
             "index": index,
             "node": node_key,
-            "uid": state.client_uids.get(id(client), ""),
+            "uid": uid,
+            "legacy_no_uid": not bool(uid),
             "client_id": id(client),
+            "connected_at": int(connected_at),
+            "connected_for_seconds": max(0, int(now - connected_at)),
             "available": is_available,
             "cooldown_until": int(cooldown_until) if cooldown_until > now else 0,
             "cooldown_remaining_seconds": max(0, int(cooldown_until - now)),
@@ -599,11 +615,40 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
     request_total = int(metrics["requests_total"])
     attempt_total = int(metrics["attempts_total"])
     token_metrics = metrics["tokens"]
+    preferred_uid = os.getenv("MIMO_PREFERRED_UID", "").strip()
+    legacy_fallback_enabled = os.getenv("MIMO_ALLOW_LEGACY_WS_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+    excluded_user_ids = sorted(
+        uid.strip()
+        for uid in os.getenv("MIMO_MANAGER_EXCLUDE_USER_IDS", "").split(",")
+        if uid.strip()
+    )
+    preferred_online_count = uid_counts.get(preferred_uid, 0) if preferred_uid else 0
     return {
         "uptime_seconds": int(now - state.metrics_started_at),
         "active_clients": len(state.active_clients),
         "available_clients": available_clients,
         "cooldown_clients": len(state.active_clients) - available_clients,
+        "uid_coverage": {
+            "uid_clients": uid_clients,
+            "legacy_no_uid_clients": legacy_clients,
+            "unique_uids": len(uid_counts),
+            "coverage_rate": round((uid_clients / len(state.active_clients)) * 100, 2) if state.active_clients else 0.0,
+            "uids": uid_counts,
+        },
+        "dispatch_policy": {
+            "preferred_uid_first": bool(preferred_uid),
+            "uid_nodes_preferred_over_legacy": True,
+            "legacy_fallback_enabled": legacy_fallback_enabled,
+            "legacy_used_only_when_no_uid_available": bool(uid_clients) or legacy_fallback_enabled,
+        },
+        "preferred_uid": {
+            "configured": preferred_uid,
+            "online": bool(preferred_online_count),
+            "online_count": preferred_online_count,
+            "is_excluded_from_manager": preferred_uid in excluded_user_ids if preferred_uid else False,
+            "fallback_active": bool(preferred_uid and not preferred_online_count and available_clients > 0),
+        },
+        "manager_excluded_user_ids": excluded_user_ids,
         "pending_requests": len(state.pending_queues),
         "tracked_ws_request_sets": len(state.ws_to_req_ids),
         "background_tasks": background_tasks_count,
