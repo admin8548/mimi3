@@ -277,6 +277,7 @@ READ_ONLY_VERIFIED: frozenset[str] = frozenset(
         "config.get",
         "config.schema",
         "config.schema.lookup",
+        "exec.approvals.get",
         "models.list",
         "tools.catalog",
         "agents.list",
@@ -432,6 +433,36 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
         "meaning": "读取 agent 可用工具目录；实测返回 profiles/groups/tools。",
         "known_good": {},
     },
+    "exec.approvals.get": {
+        "required": [],
+        "meaning": "读取全局 exec approval 配置；实测返回 path/exists/hash/file，file 含 version/socket/defaults/agents。",
+        "known_good": {},
+    },
+    "exec.approvals.node.get": {
+        "required": ["nodeId"],
+        "meaning": "读取指定 node 的 exec approval 配置；缺 nodeId 会 schema 错，未知 node 返回 NOT_CONNECTED。",
+        "known_good": {"nodeId": "node-id"},
+    },
+    "exec.approval.waitDecision": {
+        "required": ["id"],
+        "meaning": "等待指定 approval 决策；参数名是 id，不是 approvalId；未知/过期 id 返回 not found。",
+        "known_good": {"id": "approval-id"},
+    },
+    "exec.approval.resolve": {
+        "required": ["id", "decision"],
+        "meaning": "解析审批请求；实测 decision=deny 是有效枚举，未知 id 返回 unknown/expired；其它决策值仍待真实审批事件确认。",
+        "known_good": {"id": "approval-id", "decision": "deny"},
+    },
+    "browser.request": {
+        "required": ["method", "path"],
+        "meaning": "向 OpenClaw browser/cdp 管理端发请求；GET / 返回 browser runtime 状态，/json/version 在浏览器未运行时返回 Not Found。",
+        "known_good": {"method": "GET", "path": "/"},
+    },
+    "sessions.compact": {
+        "required": ["key"],
+        "meaning": "压缩指定 session；参数名是 key，不接受 sessionKey/keys/dryRun；不存在 key 返回 compacted=false/reason=no sessionId。",
+        "known_good": {"key": DEFAULT_SESSION_KEY},
+    },
     "node.describe": {
         "required": ["nodeId"],
         "meaning": "查看指定 node 详情；矩阵验证显示必须提供 nodeId。",
@@ -439,7 +470,8 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     "chat.abort": {
         "required": ["sessionKey"],
         "optional": ["runId"],
-        "meaning": "候选中止入口；语义需继续验证，不能等同于不存在的 agent.cancel。",
+        "meaning": "中止 session 中活跃 chat/run 的候选入口；无活跃 run 时返回 ok=true、aborted=false、runIds=[]。",
+        "known_good": {"sessionKey": DEFAULT_SESSION_KEY, "runId": "optional-run-id"},
     },
 }
 

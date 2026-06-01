@@ -361,3 +361,17 @@ update.available
 - `PARAMETER_HINTS` 补充 `agent.identity.get/gateway.identity.get/config.schema.lookup/doctor.memory.status/models.list/tools.catalog`；
 - `summarize_openclaw_event()` 增强 tool stream 摘要：`tool_name/tool_call_id_present/args_keys/meta_keys`；
 - 单元测试增加 tool event schema 防泄露验证。
+
+## 第三轮剩余方法验证补充（2026-06-01 22:54-22:56 Asia/Shanghai）
+
+在 `3a53a89` 上设置新的回退 tag：`rollback-openclaw-deeper-20260601`，然后继续验证剩余非阻断能力：
+
+- `chat.abort`：`sessionKey` 必填、`runId` 可选；无活跃 run 时返回 `ok=true/aborted=false/runIds=[]`。
+- `sessions.compact`：必填字段是 `key`；不接受 `sessionKey/keys/dryRun`；不存在 key 返回 `compacted=false/reason=no sessionId`。
+- `browser.request`：必填字段是 `method/path`；`GET /` 返回 browser runtime 状态；`/json/version` 在 browser 未运行时为 `Not Found`。
+- `exec.approvals.get`：只读返回全局审批配置。
+- `exec.approvals.node.get`：必填 `nodeId`；未知 node 返回 `NOT_CONNECTED`。
+- `exec.approval.waitDecision`：必填 `id`，不是 `approvalId`。
+- `exec.approval.resolve`：参数为 `id/decision`；`decision=deny` 已确认为有效拒绝枚举，批准枚举仍需真实审批事件确认。
+
+代码已补充相应 `PARAMETER_HINTS` 与测试，`exec.approvals.get` 标记为只读已验证。

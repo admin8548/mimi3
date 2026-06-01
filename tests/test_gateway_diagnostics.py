@@ -114,6 +114,9 @@ class OpenClawProtocolCatalogTests(unittest.TestCase):
         self.assertTrue(catalog["methods"]["agent"]["mutating_or_execution"])
         self.assertEqual(classify_method("sessions.list")["category"], "sessions")
         self.assertTrue(classify_method("agent.identity.get")["read_only_verified"])
+        self.assertTrue(classify_method("exec.approvals.get")["read_only_verified"])
+        self.assertEqual(classify_method("browser.request")["parameter_hint"]["required"], ["method", "path"])
+        self.assertEqual(classify_method("sessions.compact")["parameter_hint"]["required"], ["key"])
         self.assertEqual(classify_event("agent")["hint"]["streams"]["assistant"].startswith("模型文本流"), True)
 
     def test_hello_payload_summary_is_sanitized_and_counted(self):

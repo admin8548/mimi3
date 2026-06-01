@@ -338,3 +338,124 @@ rollback-openclaw-protocol-20260601 -> 5a19c4b
 git reset --hard rollback-openclaw-protocol-20260601
 docker compose up -d --build
 ```
+
+## 13. 第三轮剩余方法验证补充（2026-06-01 22:54-22:56 Asia/Shanghai）
+
+本轮继续验证剩余非阻断能力，回退点为：
+
+```text
+rollback-openclaw-deeper-20260601 -> 3a53a89
+```
+
+运行证据写入本地 `data/openclaw_remaining_probe_result.json`、`data/openclaw_remaining_probe2_result.json`、`data/openclaw_approval_probe_result.json`、`data/openclaw_approval_decision_probe_result.json`（`data/` 不提交）。
+
+### 13.1 `chat.abort`
+
+验证调用：
+
+```json
+{"sessionKey":"agent:main:main","runId":"nonexistent-probe-run"}
+{"sessionKey":"agent:main:main"}
+```
+
+结果均成功返回：
+
+```json
+{"ok":true,"aborted":false,"runIds":[]}
+```
+
+结论：
+
+- 参数至少需要 `sessionKey`；
+- `runId` 可选；
+- 无活跃 run 时不会报错，返回 `aborted=false`；
+- 它是当前协议中替代不存在的 `agent.cancel/agent.interrupt` 的候选中止入口，但还需要在真实长 run 中验证是否能中止 agent/tool run。
+
+### 13.2 `sessions.compact`
+
+错误参数验证：
+
+```json
+{"sessionKey":"probe:nonexistent"}
+{"keys":["probe:nonexistent"]}
+{"key":"probe:nonexistent","dryRun":true}
+```
+
+结果显示：
+
+- 必填字段是 `key`；
+- 不接受 `sessionKey`；
+- 不接受 `keys`；
+- 不接受 `dryRun`。
+
+使用不存在 key：
+
+```json
+{"key":"probe:nonexistent"}
+```
+
+返回：
+
+```json
+{"ok":true,"key":"...","compacted":false,"reason":"no sessionId"}
+```
+
+结论：`sessions.compact` 的真实参数是 `key`，对不存在 session 是无副作用返回。
+
+### 13.3 `browser.request`
+
+错误参数：
+
+```json
+{}
+{"url":"about:blank"}
+```
+
+返回：
+
+```text
+method and path are required
+```
+
+有效只读请求：
+
+```json
+{"method":"GET","path":"/"}
+```
+
+返回 browser runtime 状态，关键字段包括：
+
+```text
+enabled, profile, running, cdpReady, cdpHttp, pid, cdpPort, cdpUrl,
+chosenBrowser, detectedBrowser, detectedExecutablePath, userDataDir,
+headless, noSandbox, executablePath, attachOnly
+```
+
+`GET /json/version`、`GET /status` 在 browser 未运行时返回 `Not Found`。
+
+结论：`browser.request` 是 OpenClaw browser/CDP 管理端请求代理，参数为 `method + path`。
+
+### 13.4 `exec.approvals.*` / `exec.approval.*`
+
+`exec.approvals.get` 成功返回全局审批配置：
+
+```text
+path, exists, hash, file.version, file.socket.path, file.defaults, file.agents
+```
+
+`exec.approvals.node.get`：
+
+- 缺少 `nodeId` 返回 schema 错误；
+- 未知 nodeId 返回 `NOT_CONNECTED: node not connected`。
+
+`exec.approval.waitDecision`：
+
+- 参数名是 `id`，不是 `approvalId`；
+- 未知/过期 id 返回 `approval expired or not found`。
+
+`exec.approval.resolve`：
+
+- 参数为 `id + decision`；
+- 实测 `decision=deny` 是有效枚举，未知 id 返回 `unknown or expired approval id`；
+- `approve/allow/reject/yes/no` 等均返回 `invalid decision`；
+- 允许/批准侧枚举仍需等待真实 `exec.approval.requested` 事件后再确认。
