@@ -1,0 +1,601 @@
+"""OpenClaw protocol catalog and low-risk schema helpers.
+
+This module intentionally contains only protocol metadata and small summarizers.
+It does not open network connections and does not carry credentials.
+"""
+
+from __future__ import annotations
+
+import time
+from collections import Counter
+from typing import Any
+
+OPENCLAW_PROTOCOL_VERSION = 3
+DEFAULT_AGENT_ID = "main"
+DEFAULT_SESSION_KEY = "agent:main:main"
+
+CONNECT_PARAMS_TEMPLATE: dict[str, Any] = {
+    "minProtocol": OPENCLAW_PROTOCOL_VERSION,
+    "maxProtocol": OPENCLAW_PROTOCOL_VERSION,
+    "client": {
+        "id": "cli",
+        "version": "mimo-claw-ui",
+        "platform": "Linux x86_64",
+        "mode": "cli",
+    },
+    "role": "operator",
+    "scopes": [
+        "operator.admin",
+        "operator.read",
+        "operator.write",
+        "operator.approvals",
+        "operator.pairing",
+    ],
+    "caps": ["tool-events"],
+    "userAgent": "Mozilla/5.0",
+    "locale": "zh-CN",
+}
+
+KNOWN_METHODS: tuple[str, ...] = (
+    "health",
+    "doctor.memory.status",
+    "logs.tail",
+    "channels.status",
+    "channels.logout",
+    "status",
+    "usage.status",
+    "usage.cost",
+    "tts.status",
+    "tts.providers",
+    "tts.enable",
+    "tts.disable",
+    "tts.convert",
+    "tts.setProvider",
+    "config.get",
+    "config.set",
+    "config.apply",
+    "config.patch",
+    "config.schema",
+    "config.schema.lookup",
+    "exec.approvals.get",
+    "exec.approvals.set",
+    "exec.approvals.node.get",
+    "exec.approvals.node.set",
+    "exec.approval.request",
+    "exec.approval.waitDecision",
+    "exec.approval.resolve",
+    "wizard.start",
+    "wizard.next",
+    "wizard.cancel",
+    "wizard.status",
+    "talk.config",
+    "talk.mode",
+    "models.list",
+    "tools.catalog",
+    "agents.list",
+    "agents.create",
+    "agents.update",
+    "agents.delete",
+    "agents.files.list",
+    "agents.files.get",
+    "agents.files.set",
+    "skills.status",
+    "skills.bins",
+    "skills.install",
+    "skills.update",
+    "update.run",
+    "voicewake.get",
+    "voicewake.set",
+    "secrets.reload",
+    "secrets.resolve",
+    "sessions.list",
+    "sessions.preview",
+    "sessions.patch",
+    "sessions.reset",
+    "sessions.delete",
+    "sessions.compact",
+    "last-heartbeat",
+    "set-heartbeats",
+    "wake",
+    "node.pair.request",
+    "node.pair.list",
+    "node.pair.approve",
+    "node.pair.reject",
+    "node.pair.verify",
+    "device.pair.list",
+    "device.pair.approve",
+    "device.pair.reject",
+    "device.pair.remove",
+    "device.token.rotate",
+    "device.token.revoke",
+    "node.rename",
+    "node.list",
+    "node.describe",
+    "node.pending.drain",
+    "node.pending.enqueue",
+    "node.invoke",
+    "node.pending.pull",
+    "node.pending.ack",
+    "node.invoke.result",
+    "node.event",
+    "node.canvas.capability.refresh",
+    "cron.list",
+    "cron.status",
+    "cron.add",
+    "cron.update",
+    "cron.remove",
+    "cron.run",
+    "cron.runs",
+    "gateway.identity.get",
+    "system-presence",
+    "system-event",
+    "send",
+    "agent",
+    "agent.identity.get",
+    "agent.wait",
+    "browser.request",
+    "chat.history",
+    "chat.abort",
+    "chat.send",
+)
+
+KNOWN_EVENTS: tuple[str, ...] = (
+    "connect.challenge",
+    "agent",
+    "chat",
+    "presence",
+    "tick",
+    "talk.mode",
+    "shutdown",
+    "health",
+    "heartbeat",
+    "cron",
+    "node.pair.requested",
+    "node.pair.resolved",
+    "node.invoke.request",
+    "device.pair.requested",
+    "device.pair.resolved",
+    "voicewake.changed",
+    "exec.approval.requested",
+    "exec.approval.resolved",
+    "update.available",
+)
+
+METHOD_CATEGORIES: dict[str, str] = {
+    "health": "health",
+    "status": "health",
+    "doctor.memory.status": "health",
+    "logs.tail": "diagnostics",
+    "channels.status": "channels",
+    "channels.logout": "channels",
+    "usage.status": "usage",
+    "usage.cost": "usage",
+    "tts.status": "tts",
+    "tts.providers": "tts",
+    "tts.enable": "tts",
+    "tts.disable": "tts",
+    "tts.convert": "tts",
+    "tts.setProvider": "tts",
+    "config.get": "config",
+    "config.set": "config",
+    "config.apply": "config",
+    "config.patch": "config",
+    "config.schema": "config",
+    "config.schema.lookup": "config",
+    "exec.approvals.get": "approval",
+    "exec.approvals.set": "approval",
+    "exec.approvals.node.get": "approval",
+    "exec.approvals.node.set": "approval",
+    "exec.approval.request": "approval",
+    "exec.approval.waitDecision": "approval",
+    "exec.approval.resolve": "approval",
+    "wizard.start": "wizard",
+    "wizard.next": "wizard",
+    "wizard.cancel": "wizard",
+    "wizard.status": "wizard",
+    "talk.config": "talk",
+    "talk.mode": "talk",
+    "models.list": "models_tools",
+    "tools.catalog": "models_tools",
+    "agents.list": "agents",
+    "agents.create": "agents",
+    "agents.update": "agents",
+    "agents.delete": "agents",
+    "agents.files.list": "agent_files",
+    "agents.files.get": "agent_files",
+    "agents.files.set": "agent_files",
+    "skills.status": "skills",
+    "skills.bins": "skills",
+    "skills.install": "skills",
+    "skills.update": "skills",
+    "update.run": "update",
+    "voicewake.get": "voicewake",
+    "voicewake.set": "voicewake",
+    "secrets.reload": "secrets",
+    "secrets.resolve": "secrets",
+    "sessions.list": "sessions",
+    "sessions.preview": "sessions",
+    "sessions.patch": "sessions",
+    "sessions.reset": "sessions",
+    "sessions.delete": "sessions",
+    "sessions.compact": "sessions",
+    "last-heartbeat": "heartbeat",
+    "set-heartbeats": "heartbeat",
+    "wake": "runtime",
+    "node.pair.request": "node_pairing",
+    "node.pair.list": "node_pairing",
+    "node.pair.approve": "node_pairing",
+    "node.pair.reject": "node_pairing",
+    "node.pair.verify": "node_pairing",
+    "device.pair.list": "device_pairing",
+    "device.pair.approve": "device_pairing",
+    "device.pair.reject": "device_pairing",
+    "device.pair.remove": "device_pairing",
+    "device.token.rotate": "device_pairing",
+    "device.token.revoke": "device_pairing",
+    "node.rename": "node",
+    "node.list": "node",
+    "node.describe": "node",
+    "node.pending.drain": "node_pending",
+    "node.pending.enqueue": "node_pending",
+    "node.invoke": "node_invoke",
+    "node.pending.pull": "node_pending",
+    "node.pending.ack": "node_pending",
+    "node.invoke.result": "node_invoke",
+    "node.event": "node_invoke",
+    "node.canvas.capability.refresh": "node_canvas",
+    "cron.list": "cron",
+    "cron.status": "cron",
+    "cron.add": "cron",
+    "cron.update": "cron",
+    "cron.remove": "cron",
+    "cron.run": "cron",
+    "cron.runs": "cron",
+    "gateway.identity.get": "identity",
+    "system-presence": "system",
+    "system-event": "system",
+    "send": "message",
+    "agent": "agent_run",
+    "agent.identity.get": "identity",
+    "agent.wait": "agent_run",
+    "browser.request": "browser",
+    "chat.history": "chat",
+    "chat.abort": "chat",
+    "chat.send": "chat",
+}
+
+# Methods verified as low-impact/read-only in the 2026-06-01 matrix.
+READ_ONLY_VERIFIED: frozenset[str] = frozenset(
+    {
+        "health",
+        "status",
+        "usage.status",
+        "usage.cost",
+        "tts.status",
+        "tts.providers",
+        "config.get",
+        "config.schema",
+        "models.list",
+        "tools.catalog",
+        "agents.list",
+        "agents.files.list",
+        "skills.status",
+        "voicewake.get",
+        "sessions.list",
+        "last-heartbeat",
+        "node.pair.list",
+        "device.pair.list",
+        "node.list",
+        "cron.list",
+        "cron.status",
+        "cron.runs",
+        "gateway.identity.get",
+        "system-presence",
+        "chat.history",
+    }
+)
+
+CURRENTLY_IMPLEMENTED: frozenset[str] = frozenset(
+    {"connect", "sessions.list", "chat.history", "chat.send", "agent", "agent.wait"}
+)
+
+MUTATING_METHOD_PREFIXES: tuple[str, ...] = (
+    "channels.logout",
+    "tts.enable",
+    "tts.disable",
+    "tts.convert",
+    "tts.setProvider",
+    "config.set",
+    "config.apply",
+    "config.patch",
+    "exec.approvals.set",
+    "exec.approvals.node.set",
+    "exec.approval.request",
+    "exec.approval.resolve",
+    "wizard.start",
+    "wizard.next",
+    "wizard.cancel",
+    "agents.create",
+    "agents.update",
+    "agents.delete",
+    "agents.files.set",
+    "skills.install",
+    "skills.update",
+    "update.run",
+    "voicewake.set",
+    "secrets.reload",
+    "sessions.patch",
+    "sessions.reset",
+    "sessions.delete",
+    "sessions.compact",
+    "set-heartbeats",
+    "wake",
+    "node.pair.request",
+    "node.pair.approve",
+    "node.pair.reject",
+    "node.pair.verify",
+    "device.pair.approve",
+    "device.pair.reject",
+    "device.pair.remove",
+    "device.token.rotate",
+    "device.token.revoke",
+    "node.rename",
+    "node.pending.drain",
+    "node.pending.enqueue",
+    "node.invoke",
+    "node.pending.pull",
+    "node.pending.ack",
+    "node.invoke.result",
+    "node.event",
+    "node.canvas.capability.refresh",
+    "cron.add",
+    "cron.update",
+    "cron.remove",
+    "cron.run",
+    "system-event",
+    "send",
+    "agent",
+    "browser.request",
+    "chat.abort",
+    "chat.send",
+)
+
+PARAMETER_HINTS: dict[str, dict[str, Any]] = {
+    "connect": {
+        "required": ["minProtocol", "maxProtocol", "client", "role", "scopes", "caps", "userAgent", "locale"],
+        "meaning": "WebSocket 首包协商；决定协议版本、operator 角色、scope 权限和 tool-events 能力。",
+        "known_good": CONNECT_PARAMS_TEMPLATE,
+    },
+    "sessions.list": {
+        "required": [],
+        "optional": ["includeGlobal", "includeUnknown", "limit"],
+        "meaning": "列出 agent 会话；mimo2api 用第一项 key 作为后续 chat.history 的真实 sessionKey。",
+        "known_good": {"includeGlobal": True, "includeUnknown": False, "limit": 120},
+    },
+    "chat.history": {
+        "required": ["sessionKey"],
+        "optional": ["limit", "before", "after"],
+        "meaning": "加载 UI/chat 历史上下文；初始化阶段用于让后续会话与官方 Web UI 对齐。",
+        "known_good": {"sessionKey": DEFAULT_SESSION_KEY, "limit": 200},
+    },
+    "chat.send": {
+        "required": ["sessionKey", "message", "idempotencyKey"],
+        "optional": ["deliver"],
+        "meaning": "普通 UI chat 通道；可产生 events.chat，但不是工具执行入口。",
+        "known_good": {"sessionKey": DEFAULT_SESSION_KEY, "message": "...", "deliver": False, "idempotencyKey": "uuid"},
+    },
+    "agent": {
+        "required": ["agentId", "message", "idempotencyKey"],
+        "meaning": "真正的 agent/tool 执行入口；返回/关联 runId，执行证据在 events.agent。",
+        "known_good": {"agentId": DEFAULT_AGENT_ID, "message": "...", "idempotencyKey": "uuid-run-id"},
+    },
+    "agent.wait": {
+        "required": ["runId"],
+        "meaning": "等待 agent run 进入完成态；只能证明 run 结束，不能单独证明 bridge 已连接。",
+        "known_good": {"runId": "uuid-run-id"},
+    },
+    "sessions.preview": {
+        "required": ["keys"],
+        "meaning": "批量预览会话；矩阵验证显示参数名是 keys，不是 sessionKey。",
+        "known_good": {"keys": [DEFAULT_SESSION_KEY]},
+    },
+    "node.describe": {
+        "required": ["nodeId"],
+        "meaning": "查看指定 node 详情；矩阵验证显示必须提供 nodeId。",
+    },
+    "chat.abort": {
+        "required": ["sessionKey"],
+        "optional": ["runId"],
+        "meaning": "候选中止入口；语义需继续验证，不能等同于不存在的 agent.cancel。",
+    },
+}
+
+EVENT_HINTS: dict[str, dict[str, Any]] = {
+    "connect.challenge": {
+        "meaning": "服务端要求客户端发送 connect RPC；必须先完成该挑战才会 hello-ok。",
+        "payload_fields": {"challenge": "握手挑战/nonce（当前实现不需要显式回签）。"},
+    },
+    "agent": {
+        "meaning": "agent run 实时事件，是判断工具链是否触发的主证据。",
+        "payload_fields": {
+            "runId": "agent run 唯一 ID；应与 agent.idempotencyKey / agent.wait.runId 对齐。",
+            "stream": "子流类型：lifecycle、assistant、tool 等。",
+            "data": "子流负载；结构随 stream 改变。",
+            "sessionKey": "该 run 绑定的会话。",
+            "seq": "run 内事件序号。",
+            "ts": "服务端毫秒时间戳。",
+        },
+        "streams": {
+            "lifecycle": "run 生命周期；data.phase=start/end，包含 startedAt/endedAt。",
+            "assistant": "模型文本流；data.delta 为增量，data.text 为截至当前的累计文本。",
+            "tool": "工具调用流；用于确认 exec/process/write 等工具链已触发；常见 data.phase/result/isError/meta，完整 schema 需继续采样。",
+        },
+    },
+    "chat": {
+        "meaning": "UI/审计消息事件；可作为文本 fallback，但不能覆盖 events.agent 工具成功证据。",
+        "payload_fields": {
+            "runId": "相关 run ID（如存在）。",
+            "sessionKey": "会话 key。",
+            "seq": "事件序号。",
+            "state": "delta/final 等 UI 消息状态。",
+            "message": "role/content/timestamp 消息体。",
+        },
+    },
+    "health": {"meaning": "服务端健康状态广播。"},
+    "heartbeat": {"meaning": "心跳/保活事件。"},
+    "presence": {"meaning": "gateway/node presence 变化。"},
+    "tick": {"meaning": "服务端周期 tick。"},
+    "cron": {"meaning": "cron 任务状态或运行事件。"},
+    "node.invoke.request": {"meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列。"},
+    "exec.approval.requested": {"meaning": "工具/exec 审批请求；对应 exec.approval.resolve。"},
+    "exec.approval.resolved": {"meaning": "审批完成事件。"},
+}
+
+ENVELOPE_FIELD_DICTIONARY: dict[str, str] = {
+    "type": "WebSocket envelope 类型：req/res/event。",
+    "id": "RPC 请求/响应关联 ID；req 与 res 必须一致。",
+    "method": "RPC 方法名；以 hello-ok.features.methods 为准。",
+    "params": "RPC 参数对象；不同 method schema 不同。",
+    "ok": "响应是否成功；false 时读取 error。",
+    "payload": "响应或事件主负载。",
+    "error": "错误对象；通常含 message/code 等字段。",
+    "event": "事件名；以 hello-ok.features.events 为准。",
+    "seq": "连接级或事件级递增序号，用于排序和去重。",
+    "stateVersion": "状态快照版本号；用于判断 snapshot/presence 是否更新。",
+}
+
+
+def build_connect_params() -> dict[str, Any]:
+    """Return a fresh connect params dict so callers can mutate safely."""
+    return {
+        key: (value.copy() if isinstance(value, dict) else list(value) if isinstance(value, list) else value)
+        for key, value in CONNECT_PARAMS_TEMPLATE.items()
+    }
+
+
+def is_mutating_method(method: str) -> bool:
+    return method in MUTATING_METHOD_PREFIXES
+
+
+def classify_method(method: str) -> dict[str, Any]:
+    return {
+        "method": method,
+        "known": method == "connect" or method in KNOWN_METHODS,
+        "category": "handshake" if method == "connect" else METHOD_CATEGORIES.get(method, "unknown"),
+        "implemented_in_manager": method in CURRENTLY_IMPLEMENTED,
+        "read_only_verified": method in READ_ONLY_VERIFIED,
+        "mutating_or_execution": is_mutating_method(method),
+        "parameter_hint": PARAMETER_HINTS.get(method, {}),
+    }
+
+
+def classify_event(event: str) -> dict[str, Any]:
+    return {
+        "event": event,
+        "known": event in KNOWN_EVENTS,
+        "category": event.split(".", 1)[0],
+        "hint": EVENT_HINTS.get(event, {}),
+    }
+
+
+def _features_from_hello(payload: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+    features = (payload or {}).get("features") if isinstance(payload, dict) else {}
+    if not isinstance(features, dict):
+        return list(KNOWN_METHODS), list(KNOWN_EVENTS)
+    methods = features.get("methods") if isinstance(features.get("methods"), list) else list(KNOWN_METHODS)
+    events = features.get("events") if isinstance(features.get("events"), list) else list(KNOWN_EVENTS)
+    return [str(m) for m in methods], [str(e) for e in events]
+
+
+def summarize_hello_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Persist only protocol/schema metadata from a hello-ok payload."""
+    payload = payload if isinstance(payload, dict) else {}
+    methods, events = _features_from_hello(payload)
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+    health = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else {}
+    session_defaults = payload.get("sessionDefaults") if isinstance(payload.get("sessionDefaults"), dict) else {}
+    server = payload.get("server") if isinstance(payload.get("server"), dict) else {}
+    return {
+        "captured_at": int(time.time()),
+        "type": payload.get("type"),
+        "protocol": payload.get("protocol"),
+        "server_version": server.get("version"),
+        "server_conn_id_present": bool(server.get("connId")),
+        "auth_mode": payload.get("authMode") or payload.get("auth", {}).get("mode") if isinstance(payload.get("auth"), dict) else payload.get("authMode"),
+        "canvas_host_url_present": bool(payload.get("canvasHostUrl")),
+        "default_agent_id": health.get("defaultAgentId") or payload.get("defaultAgentId"),
+        "session_defaults": {
+            "mainKey": session_defaults.get("mainKey"),
+            "mainSessionKey": session_defaults.get("mainSessionKey"),
+        },
+        "method_count": len(methods),
+        "event_count": len(events),
+        "methods": methods,
+        "events": events,
+        "method_categories": dict(Counter(METHOD_CATEGORIES.get(m, "unknown") for m in methods)),
+    }
+
+
+def summarize_openclaw_event(message: dict[str, Any]) -> dict[str, Any]:
+    payload = message.get("payload") if isinstance(message, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    event_name = str(message.get("event", "")) if isinstance(message, dict) else ""
+    result: dict[str, Any] = {
+        "event": event_name,
+        "known": event_name in KNOWN_EVENTS,
+        "seq": message.get("seq") if isinstance(message, dict) else None,
+    }
+    if event_name == "agent":
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        result.update(
+            {
+                "run_id": payload.get("runId"),
+                "session_key": payload.get("sessionKey"),
+                "stream": payload.get("stream"),
+                "run_seq": payload.get("seq"),
+                "ts": payload.get("ts"),
+                "phase": data.get("phase"),
+                "is_error": data.get("isError"),
+                "has_delta": bool(data.get("delta")),
+                "text_len": len(str(data.get("text") or "")),
+                "data_keys": sorted(data.keys()),
+            }
+        )
+    elif event_name == "chat":
+        msg = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        content = msg.get("content") if isinstance(msg.get("content"), list) else []
+        result.update(
+            {
+                "run_id": payload.get("runId"),
+                "session_key": payload.get("sessionKey"),
+                "state": payload.get("state"),
+                "role": msg.get("role"),
+                "content_items": len(content),
+            }
+        )
+    return result
+
+
+def build_protocol_catalog(features: dict[str, Any] | None = None) -> dict[str, Any]:
+    methods, events = _features_from_hello({"features": features} if features else None)
+    categories: dict[str, list[str]] = {}
+    for method in methods:
+        categories.setdefault(METHOD_CATEGORIES.get(method, "unknown"), []).append(method)
+    return {
+        "protocol_version": OPENCLAW_PROTOCOL_VERSION,
+        "method_count": len(methods),
+        "event_count": len(events),
+        "methods": {method: classify_method(method) for method in methods},
+        "events": {event: classify_event(event) for event in events},
+        "method_categories": categories,
+        "implemented_methods": sorted(CURRENTLY_IMPLEMENTED),
+        "read_only_verified_methods": sorted(READ_ONLY_VERIFIED),
+        "envelope_fields": ENVELOPE_FIELD_DICTIONARY,
+        "parameter_hints": PARAMETER_HINTS,
+        "event_hints": EVENT_HINTS,
+        "known_gaps": [
+            "events.agent/tool 子流完整字段仍需在真实工具调用中继续采样。",
+            "chat.abort 是否可中止 agent run 仍需低影响验证。",
+            "exec.approval.*、browser.request、node.invoke.* 仅完成分类，尚未纳入执行闭环。",
+        ],
+    }

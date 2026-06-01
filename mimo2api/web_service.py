@@ -47,6 +47,7 @@ from .auth import (
     require_ai_request,
     require_webui_request,
 )
+from .openclaw_protocol import build_protocol_catalog
 from .metrics_store import (
     METRICS_BUCKET_SECONDS,
     METRICS_RETENTION_DAYS,
@@ -220,6 +221,7 @@ WEBUI_PUBLIC_PATHS = {
     "/api/auth/logout",
     "/api/stats",
     "/api/diagnostics/routes",
+    "/api/openclaw/protocol",
     "/api/status/history",
     "/webui",
 }
@@ -548,6 +550,32 @@ async def api_errors(limit: int = 50):
     errors = list(state.recent_errors)[-limit:]
     errors.reverse()  # 最新的在前
     return JSONResponse(content={"count": len(errors), "errors": errors})
+
+@app.get("/api/agent-runs")
+async def api_agent_runs(limit: int = 50):
+    limit = max(1, min(limit, 200))
+    runs = list(state.recent_agent_runs)[-limit:]
+    runs.reverse()
+    return JSONResponse(content={"count": len(runs), "runs": runs})
+
+@app.get("/api/openclaw/protocol")
+async def api_openclaw_protocol():
+    """Return the local OpenClaw protocol catalog and field dictionary."""
+    return JSONResponse(content=build_protocol_catalog())
+
+@app.get("/api/openclaw/features")
+async def api_openclaw_features():
+    """Return sanitized hello-ok features observed from active manager sessions."""
+    features = dict(state.openclaw_features_by_uid)
+    return JSONResponse(content={"count": len(features), "by_uid": features})
+
+@app.get("/api/openclaw/events")
+async def api_openclaw_events(limit: int = 100):
+    """Return recent sanitized OpenClaw event summaries for protocol research."""
+    limit = max(1, min(limit, 1000))
+    events = list(state.recent_openclaw_events)[-limit:]
+    events.reverse()
+    return JSONResponse(content={"count": len(events), "events": events})
 
 def load_model_mapping() -> dict[str, str]:
     if not MODEL_MAPPING_FILE.exists():

@@ -23,6 +23,10 @@ class GatewayState:
         self.metrics_history_last_snapshot: Dict[str, Any] | None = None
         self.metrics: Dict[str, Any] = self._default_metrics()
         self.recent_errors: deque = deque(maxlen=500)
+        self.recent_agent_runs: deque = deque(maxlen=200)
+        self.recent_openclaw_events: deque = deque(maxlen=1000)
+        # uid -> sanitized hello-ok protocol feature summary from OpenClaw.
+        self.openclaw_features_by_uid: Dict[str, Any] = {}
 
     @staticmethod
     def _default_metrics() -> Dict[str, Any]:

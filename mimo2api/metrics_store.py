@@ -682,6 +682,12 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
             "completion_tokens": int(token_metrics["completion_tokens"]),
             "total_tokens": int(token_metrics["total_tokens"]),
         },
+        "recent_agent_runs": list(state.recent_agent_runs)[-20:],
+        "recent_openclaw_events": list(state.recent_openclaw_events)[-20:],
+        "openclaw_features": {
+            "observed_uids": len(state.openclaw_features_by_uid),
+            "by_uid": dict(state.openclaw_features_by_uid),
+        },
         "routes": routes,
         "nodes": nodes,
     }

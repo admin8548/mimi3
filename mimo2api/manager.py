@@ -16,14 +16,17 @@ import time
 import asyncio
 import logging
 import uuid
+from pathlib import Path
 from urllib.parse import quote
 import httpx
 import websockets
 
 try:
     from .gateway_state import state
+    from .openclaw_protocol import build_connect_params, summarize_hello_payload, summarize_openclaw_event
 except ImportError:  # pragma: no cover - direct script execution fallback
     from gateway_state import state
+    from openclaw_protocol import build_connect_params, summarize_hello_payload, summarize_openclaw_event
 
 # 手动重建信号
 rebuild_event = asyncio.Event()
@@ -70,6 +73,58 @@ REMOTE_SHUTDOWN_CONFIRM_PROMPT = (
 )
 HOLD_ON_INJECTION_FAILURE = os.getenv("MIMO_HOLD_ON_INJECTION_FAILURE", "true").strip().lower() in {"1", "true", "yes", "on"}
 BRIDGE_CONNECT_TIMEOUT_SECONDS = int(os.getenv("MIMO_BRIDGE_CONNECT_TIMEOUT_SECONDS", "90"))
+PROTOCOL_TRACE_ENABLED = os.getenv("MIMO_CLAW_PROTOCOL_TRACE", "false").strip().lower() in {"1", "true", "yes", "on"}
+PROTOCOL_TRACE_PATH = os.getenv("MIMO_CLAW_PROTOCOL_TRACE_PATH", os.path.join(ROOT_DIR, "data", "openclaw_protocol_trace.jsonl"))
+TRACE_VALUE_LIMIT = 200
+
+
+def _summarize_value(value, depth: int = 0):
+    """Return a low-risk schema/value summary for protocol tracing."""
+    if depth >= 3:
+        return f"<{type(value).__name__}>"
+    if isinstance(value, dict):
+        result = {}
+        for key, val in value.items():
+            key_text = str(key)
+            if any(marker in key_text.lower() for marker in ("token", "cookie", "ticket", "secret", "authorization", "api_key", "apikey")):
+                result[key_text] = "<redacted>"
+            else:
+                result[key_text] = _summarize_value(val, depth + 1)
+        return result
+    if isinstance(value, list):
+        return {
+            "type": "list",
+            "len": len(value),
+            "sample": [_summarize_value(item, depth + 1) for item in value[:3]],
+        }
+    if isinstance(value, str):
+        if len(value) > TRACE_VALUE_LIMIT:
+            return {"type": "str", "len": len(value), "prefix": value[:TRACE_VALUE_LIMIT]}
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return f"<{type(value).__name__}>"
+
+
+def trace_protocol(uid: str, direction: str, name: str, payload=None, *, req_id: str = "", run_id: str = "") -> None:
+    if not PROTOCOL_TRACE_ENABLED:
+        return
+    try:
+        record = {
+            "ts": time.time(),
+            "uid": str(uid or ""),
+            "direction": direction,
+            "name": name,
+            "req_id": req_id,
+            "run_id": run_id,
+            "payload": _summarize_value(payload),
+        }
+        path = Path(PROTOCOL_TRACE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.debug("OpenClaw 协议 trace 写入失败", exc_info=True)
 
 
 def _gateway_has_uid_bridge(uid: str, *, since_ts: float = 0) -> bool:
@@ -243,10 +298,11 @@ def _response_details(resp: httpx.Response) -> tuple[dict | None, str]:
 # ----------------- Native Claw Client实现 -----------------
 
 class NativeClawClient:
-    def __init__(self, ph: str, cookies: dict, logger_obj: logging.Logger):
+    def __init__(self, ph: str, cookies: dict, logger_obj: logging.Logger, uid: str = ""):
         self.ph = ph
         self.cookies = cookies
         self.logger = logger_obj
+        self.uid = str(uid or "")
         self.ws = None
         self._listen_task = None
         self.responses = {}
@@ -264,6 +320,7 @@ class NativeClawClient:
             raise RuntimeError("Websocket 未连接")
 
         req_id = str(uuid.uuid4())
+        trace_protocol(self.uid, "request", method, params or {}, req_id=req_id)
         await self.ws.send(json.dumps({
             "type": "req",
             "id": req_id,
@@ -275,6 +332,7 @@ class NativeClawClient:
         while time.time() < deadline:
             res = self.responses.pop(req_id, None)
             if res is not None:
+                trace_protocol(self.uid, "response", method, res, req_id=req_id)
                 if res.get("ok"):
                     return res.get("payload")
                 err = res.get("error") or {}
@@ -472,22 +530,34 @@ class NativeClawClient:
             async for message in self.ws:
                 data = json.loads(message)
                 if data["type"] == "event" and data.get("event") == "connect.challenge":
+                    trace_protocol(self.uid, "event", "connect.challenge", data)
+                    connect_req_id = str(uuid.uuid4())
+                    connect_params = build_connect_params()
+                    trace_protocol(self.uid, "request", "connect", connect_params, req_id=connect_req_id)
                     await self.ws.send(json.dumps({
-                        "type": "req", "id": str(uuid.uuid4()), "method": "connect",
-                        "params": {
-                            "minProtocol": 3, "maxProtocol": 3,
-                            "client": {"id": "cli", "version": "mimo-claw-ui", "platform": "Linux x86_64", "mode": "cli"},
-                            "role": "operator",
-                            "scopes": ["operator.admin", "operator.read", "operator.write", "operator.approvals", "operator.pairing"],
-                            "caps": ["tool-events"],
-                            "userAgent": "Mozilla/5.0", "locale": "zh-CN"
-                        }
+                        "type": "req", "id": connect_req_id, "method": "connect",
+                        "params": connect_params
                     }))
                 elif data["type"] == "res":
+                    trace_protocol(self.uid, "response", data.get("id", ""), data, req_id=str(data.get("id", "")))
                     self.responses[data["id"]] = data
                     if data.get("ok") and data.get("payload", {}).get("type") == "hello-ok":
+                        try:
+                            state.openclaw_features_by_uid[self.uid or "<unknown>"] = summarize_hello_payload(data.get("payload"))
+                        except Exception:
+                            self.logger.debug("OpenClaw hello-ok features 采集失败", exc_info=True)
                         self.connected = True
                 elif data["type"] == "event":
+                    payload = data.get("payload", {}) if isinstance(data, dict) else {}
+                    run_id = payload.get("runId", "") if isinstance(payload, dict) else ""
+                    trace_protocol(self.uid, "event", str(data.get("event", "")), data, run_id=run_id)
+                    try:
+                        event_summary = summarize_openclaw_event(data)
+                        event_summary["uid"] = self.uid
+                        event_summary["captured_at"] = int(time.time())
+                        state.recent_openclaw_events.append(event_summary)
+                    except Exception:
+                        self.logger.debug("OpenClaw 事件摘要采集失败", exc_info=True)
                     self.events.append(data)
         except Exception:
             self.connected = False
@@ -512,6 +582,7 @@ class NativeClawClient:
         }
         
         try:
+            trace_protocol(self.uid, "request", "chat.send", payload.get("params", {}), req_id=req_id)
             await self.ws.send(json.dumps(payload))
         except Exception as e:
             return f"(下发 payload 异常: {e})"
@@ -554,6 +625,9 @@ class NativeClawClient:
 
         self.events.clear()
         run_id = str(uuid.uuid4())
+        accepted = None
+        wait_payload = None
+        run_started_at = time.time()
         try:
             accepted = await self.request(
                 "agent",
@@ -564,11 +638,21 @@ class NativeClawClient:
             wait_payload = await self.request("agent.wait", {"runId": run_id}, timeout=timeout)
             self.logger.info(f"agent RPC 等待结果: {wait_payload}")
         except Exception as e:
+            state.recent_agent_runs.append({
+                "ts": int(time.time()),
+                "uid": self.uid,
+                "run_id": run_id,
+                "status": "rpc_exception",
+                "error": str(e)[:300],
+                "duration_ms": int((time.time() - run_started_at) * 1000),
+            })
             return f"(agent RPC 异常: {e})"
 
         assistant_text = ""
         tool_seen = False
         tool_errors = []
+        tool_event_count = 0
+        assistant_event_count = 0
         for evt in list(self.events):
             payload = evt.get("payload", {})
             if payload.get("runId") != run_id:
@@ -577,10 +661,12 @@ class NativeClawClient:
                 stream = payload.get("stream")
                 data = payload.get("data") or {}
                 if stream == "assistant" and data.get("text"):
+                    assistant_event_count += 1
                     # data.text is cumulative; keep the latest full value.
                     assistant_text = str(data.get("text"))
                 elif stream == "tool":
                     tool_seen = True
+                    tool_event_count += 1
                     if data.get("phase") == "result" and data.get("isError"):
                         tool_errors.append(str(data.get("meta") or data))
             elif evt.get("event") == "chat":
@@ -600,6 +686,22 @@ class NativeClawClient:
             parts.append("tool_errors=" + " | ".join(tool_errors[-2:]))
         if assistant_text:
             parts.append(assistant_text)
+        wait_status = wait_payload.get("status") if isinstance(wait_payload, dict) else "unknown"
+        state.recent_agent_runs.append({
+            "ts": int(time.time()),
+            "uid": self.uid,
+            "run_id": run_id,
+            "status": wait_status or "unknown",
+            "accepted_status": accepted.get("status") if isinstance(accepted, dict) else "unknown",
+            "tool_seen": tool_seen,
+            "tool_event_count": tool_event_count,
+            "tool_error_count": len(tool_errors),
+            "assistant_event_count": assistant_event_count,
+            "assistant_text_len": len(assistant_text),
+            "started_at": wait_payload.get("startedAt") if isinstance(wait_payload, dict) else None,
+            "ended_at": wait_payload.get("endedAt") if isinstance(wait_payload, dict) else None,
+            "duration_ms": int((time.time() - run_started_at) * 1000),
+        })
         return "\n".join(parts) if parts else "(agent 已完成但未产生文本输出)"
         
     async def close(self):
@@ -692,7 +794,7 @@ class AccountManager:
         """核心流转逻辑"""
         while True:
             self.logger.info("=== 启动新一轮 Claw 生命周期 (设定运行阈值 55 分钟) ===")
-            client = NativeClawClient(self.ph, self.cookies, self.logger)
+            client = NativeClawClient(self.ph, self.cookies, self.logger, uid=self.uid)
             try:
                 # 0. 启动时先检查有没有活着的可用实例能够复用
                 st, remain_sec = await self.get_instance_status()
@@ -714,7 +816,7 @@ class AccountManager:
                                 await interruptible_sleep(120)
                                 continue
                             self.logger.warning("复用容器注入反馈疑似失败/拒答，不再视为成功；进入销毁重建流程以刷新远端环境与 API Key。")
-                            client = NativeClawClient(self.ph, self.cookies, self.logger)
+                            client = NativeClawClient(self.ph, self.cookies, self.logger, uid=self.uid)
                         else:
                             wait_time = remain_sec - 120
                             if self.is_first_round and self.stagger_offset > 0:
@@ -733,7 +835,7 @@ class AccountManager:
                 # 1. 尝试主动销毁（残血或掉线的，均执行主动清场重来）
                 if st != "DESTROYED":
                     await self.try_shutdown_instance(client, st)
-                    client = NativeClawClient(self.ph, self.cookies, self.logger)
+                    client = NativeClawClient(self.ph, self.cookies, self.logger, uid=self.uid)
                     self.logger.info("准备强制主动销毁残余不再健康的 Claw 实例...")
                     await client.destroy_claw()
                     await asyncio.sleep(3)
@@ -767,7 +869,7 @@ class AccountManager:
 
                     # 4. 重启完了，重新上线对接 (这次只是重新拿 ws_ticket 不用再去发 api create 请求)
                     self.logger.info("重启阶段结束，开始二阶段长连接恢复建联...")
-                    client = NativeClawClient(self.ph, self.cookies, self.logger)
+                    client = NativeClawClient(self.ph, self.cookies, self.logger, uid=self.uid)
                     if not await self.connect_with_retry(client, max_retries=10, delay=8, create=False):
                         self.logger.error("重连恢复环节掉线，不符合环境预期，打断本轮，回撤到头。")
                         await client.close()
