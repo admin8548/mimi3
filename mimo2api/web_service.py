@@ -687,6 +687,7 @@ async def ws_tunnel(ws: WebSocket):
     if uid:
         state.client_uids[id(ws)] = uid
     state.client_cooldowns.pop(id(ws), None)
+    state.client_cooldown_reasons.pop(id(ws), None)
     uid_part = f" uid={uid}" if uid else " uid=<none>"
     logger.info(f"✅ 内网节点已接入:{uid_part} addr={client_addr}。当前在线节点数: {len(state.active_clients)}")
     
@@ -708,6 +709,7 @@ async def ws_tunnel(ws: WebSocket):
         state.client_uids.pop(id(ws), None)
         state.client_connected_at.pop(id(ws), None)
         state.client_cooldowns.pop(id(ws), None)
+        state.client_cooldown_reasons.pop(id(ws), None)
         
         # 清理该节点的所有孤儿队列
         orphan_ids = state.ws_to_req_ids.pop(id(ws), set())
@@ -802,6 +804,7 @@ def cleanup_pending_request(req_id: str) -> None:
 def cooldown_client(ws: WebSocket, seconds: int, reason: str) -> None:
     cooldown_until = time.time() + max(seconds, 0)
     state.client_cooldowns[id(ws)] = cooldown_until
+    state.client_cooldown_reasons[id(ws)] = reason
     logger.warning(
         f"⛔ 节点 {node_label(ws)} 因 {reason} 进入冷却 {seconds}s，"
         f"冷却结束时间戳: {int(cooldown_until)}"
@@ -816,6 +819,7 @@ async def retire_client(ws: WebSocket, reason: str) -> None:
     state.client_uids.pop(id(ws), None)
     state.client_connected_at.pop(id(ws), None)
     state.client_cooldowns.pop(id(ws), None)
+    state.client_cooldown_reasons.pop(id(ws), None)
     for req_id in list(state.ws_to_req_ids.get(id(ws), set())):
         q = state.pending_queues.get(req_id)
         if q:
@@ -881,6 +885,7 @@ async def dispatch_to_node(*, method: str, path: str, body: str, log_label: str,
         state.client_uids.pop(id(target_ws), None)
         state.client_connected_at.pop(id(target_ws), None)
         state.client_cooldowns.pop(id(target_ws), None)
+        state.client_cooldown_reasons.pop(id(target_ws), None)
         return None
 
     try:

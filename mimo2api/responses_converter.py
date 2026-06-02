@@ -138,6 +138,46 @@ def _extract_compaction_content(item: RespCompactionItem) -> str:
     return item.encrypted_content or ""
 
 
+def _normalize_function_tool(raw_tool: Any) -> dict[str, Any] | None:
+    """Normalize Responses/Chat-style function tool definitions for Chat Completions.
+
+    Responses requests commonly use:
+      {"type":"function", "name":"...", "parameters":{...}}
+    while some clients replay Chat-style history/config as:
+      {"type":"function", "function":{"name":"...", "parameters":{...}}}
+    Non-function built-in tools such as web_search_preview are not expressible
+    by this gateway's Chat Completions upstream and are skipped rather than
+    raising a KeyError.
+    """
+    if not isinstance(raw_tool, dict) or raw_tool.get("type") != "function":
+        return None
+
+    nested_function = raw_tool.get("function")
+    if isinstance(nested_function, dict):
+        name = nested_function.get("name")
+        description = nested_function.get("description", raw_tool.get("description", ""))
+        parameters = nested_function.get("parameters", raw_tool.get("parameters", {}))
+    else:
+        name = raw_tool.get("name")
+        description = raw_tool.get("description", "")
+        parameters = raw_tool.get("parameters", {})
+
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    if not isinstance(parameters, dict):
+        parameters = {}
+
+    return {
+        "type": "function",
+        "function": {
+            "name": name.strip(),
+            "description": str(description or ""),
+            "parameters": parameters,
+        },
+    }
+
+
 def _parse_response_input_item(raw_item: Any) -> RespItem | None:
     """宽容解析 Responses input 历史项，跳过 Chat Completions 无法表达的内部项。"""
     if not isinstance(raw_item, dict):
@@ -294,8 +334,8 @@ def convert_request(req: dict[str, Any]) -> dict[str, Any]:
     req = {k: v for k, v in req.items() if k in ALLOWED_CHAT_KEYS}
 
     if "tools" in req:
-        req["tools"] = [{"type": "function", "function": {"name": t["name"], "description": t.get(
-            "description", ""), "parameters": t.get("parameters", {})}} for t in req["tools"] if t.get("type") == "function"]
+        normalized_tools = [_normalize_function_tool(t) for t in req["tools"] if isinstance(t, dict)] if isinstance(req["tools"], list) else []
+        req["tools"] = [tool for tool in normalized_tools if tool is not None]
 
     # tool_choice 转换: Responses API {type, name} → Chat {type, function:{name}}
     if "tool_choice" in req:

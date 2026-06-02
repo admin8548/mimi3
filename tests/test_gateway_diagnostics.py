@@ -41,12 +41,14 @@ class DispatchSelectionTests(unittest.TestCase):
         old_clients = list(state.active_clients)
         old_uids = dict(state.client_uids)
         old_cooldowns = dict(state.client_cooldowns)
+        old_cooldown_reasons = dict(state.client_cooldown_reasons)
         old_index = state.current_client_index
         try:
             state.active_clients[:] = [legacy, uid_node]
             state.client_uids.clear()
             state.client_uids[id(uid_node)] = "uid-1"
             state.client_cooldowns.clear()
+            state.client_cooldown_reasons.clear()
             state.current_client_index = 0
             self.assertIs(get_next_client(), uid_node)
         finally:
@@ -55,6 +57,8 @@ class DispatchSelectionTests(unittest.TestCase):
             state.client_uids.update(old_uids)
             state.client_cooldowns.clear()
             state.client_cooldowns.update(old_cooldowns)
+            state.client_cooldown_reasons.clear()
+            state.client_cooldown_reasons.update(old_cooldown_reasons)
             state.current_client_index = old_index
 
     def test_legacy_is_not_selected_when_no_uid_clients_exist(self):
@@ -68,11 +72,13 @@ class DispatchSelectionTests(unittest.TestCase):
         old_clients = list(state.active_clients)
         old_uids = dict(state.client_uids)
         old_cooldowns = dict(state.client_cooldowns)
+        old_cooldown_reasons = dict(state.client_cooldown_reasons)
         old_index = state.current_client_index
         try:
             state.active_clients[:] = [legacy]
             state.client_uids.clear()
             state.client_cooldowns.clear()
+            state.client_cooldown_reasons.clear()
             state.current_client_index = 0
             self.assertIsNone(get_next_client())
         finally:
@@ -81,6 +87,8 @@ class DispatchSelectionTests(unittest.TestCase):
             state.client_uids.update(old_uids)
             state.client_cooldowns.clear()
             state.client_cooldowns.update(old_cooldowns)
+            state.client_cooldown_reasons.clear()
+            state.client_cooldown_reasons.update(old_cooldown_reasons)
             state.current_client_index = old_index
 
 
@@ -318,3 +326,65 @@ class ConfigParsingTests(unittest.TestCase):
                 os.environ.pop("MIMO_TEST_BOOL", None)
             else:
                 os.environ["MIMO_TEST_BOOL"] = old_value
+
+
+class DispatchObservabilityTests(unittest.TestCase):
+    def test_stats_exposes_node_cooldown_reason(self):
+        import time
+        from mimo2api.gateway_state import state
+        from mimo2api.metrics_store import build_gateway_stats
+
+        class ClientInfo:
+            host = "127.0.0.1"
+
+        class DummyWs:
+            client = ClientInfo()
+
+        ws = DummyWs()
+        old_clients = list(state.active_clients)
+        old_uids = dict(state.client_uids)
+        old_cooldowns = dict(state.client_cooldowns)
+        old_cooldown_reasons = dict(state.client_cooldown_reasons)
+        old_ws_to_req_ids = dict(state.ws_to_req_ids)
+        try:
+            state.active_clients[:] = [ws]
+            state.client_uids.clear()
+            state.client_uids[id(ws)] = "uid-stats"
+            state.client_cooldowns.clear()
+            state.client_cooldowns[id(ws)] = time.time() + 60
+            state.client_cooldown_reasons.clear()
+            state.client_cooldown_reasons[id(ws)] = "401 Unauthorized"
+            state.ws_to_req_ids.clear()
+
+            stats = build_gateway_stats(background_tasks_count=0)
+            self.assertEqual(stats["nodes"][0]["cooldown_reason"], "401 Unauthorized")
+            self.assertGreater(stats["nodes"][0]["cooldown_remaining_seconds"], 0)
+        finally:
+            state.active_clients[:] = old_clients
+            state.client_uids.clear()
+            state.client_uids.update(old_uids)
+            state.client_cooldowns.clear()
+            state.client_cooldowns.update(old_cooldowns)
+            state.client_cooldown_reasons.clear()
+            state.client_cooldown_reasons.update(old_cooldown_reasons)
+            state.ws_to_req_ids.clear()
+            state.ws_to_req_ids.update(old_ws_to_req_ids)
+
+
+class ResponsesToolCompatibilityTests(unittest.TestCase):
+    def test_convert_request_accepts_responses_and_chat_style_function_tools(self):
+        from mimo2api.responses_converter import convert_request
+
+        converted = convert_request({
+            "model": "mimo-v2.5",
+            "input": "hi",
+            "tools": [
+                {"type": "function", "name": "lookup", "description": "Lookup", "parameters": {"type": "object"}},
+                {"type": "function", "function": {"name": "chat_style", "parameters": {"type": "object"}}},
+                {"type": "web_search_preview"},
+                {"type": "function", "parameters": {"type": "object"}},
+            ],
+        })
+
+        self.assertEqual([tool["function"]["name"] for tool in converted["tools"]], ["lookup", "chat_style"])
+        self.assertEqual(converted["messages"][0]["content"], "hi")

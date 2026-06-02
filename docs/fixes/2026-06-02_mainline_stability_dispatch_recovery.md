@@ -39,3 +39,23 @@ python3 -m unittest discover -s tests -v
 2. 调度：增加节点选择策略的可观测字段，例如 preferred uid fallback 原因、冷却原因、近 N 次失败状态。
 3. 错误恢复：继续扩大容错范围到剩余外部输入，例如用户 JSON 文件 schema、模型映射 JSON 与 WebUI 用户导入内容。
 4. 运行期：观察 `gateway.log` 中 legacy 拒绝风暴是否降噪；必要时调大 `MIMO_LEGACY_REJECT_HOLD_SECONDS` 或临时允许 legacy fallback。
+
+## Follow-up Batch: Dispatch Observability + Responses Tool Compatibility
+
+### Outcome
+
+- `/api/stats` 的 `nodes[]` 明细新增 `cooldown_reason`，能直接看到节点处于冷却的原因，例如 `401 Unauthorized`。
+- `GatewayState` 新增 `client_cooldown_reasons`，在节点连接、断开、退休、发送失败清理时同步维护，避免冷却原因残留。
+- Responses -> Chat 转换新增函数工具标准化逻辑：
+  - 支持 Responses 风格：`{"type":"function","name":"...","parameters":{...}}`
+  - 支持 Chat 风格：`{"type":"function","function":{"name":"..."}}`
+  - 跳过无法透传到 Chat Completions 的非函数内置工具，避免 `KeyError`。
+
+### Verification
+
+新增回归测试：
+
+- `DispatchObservabilityTests.test_stats_exposes_node_cooldown_reason`
+- `ResponsesToolCompatibilityTests.test_convert_request_accepts_responses_and_chat_style_function_tools`
+
+当前测试数：20。
