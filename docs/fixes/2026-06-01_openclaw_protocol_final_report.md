@@ -450,3 +450,15 @@ update.available
 - 真实 pairing 顺序变得更清晰：先 `device.pair` 授权 node role，再可能进入 `node.pair`，最后才能验证 `node.invoke.request/result`。
 
 暂不继续批准 pairing 的原因：当前 live server 仍不支持 `node.pair.remove`，批准 node pairing 后可能留下无法通过 RPC 清理的 paired node 状态。下一步若要强行完成闭环，应先选择非关键 uid 并接受一个临时 paired node 残留，或先找到 live 版本的清理路径。
+
+## 继续推进补充：node.invoke 真实闭环已完成
+
+用户指定 `6875021188` 可用于 node 深测后，本轮完成了 `node.invoke.*` 的真实闭环：
+
+- 官方 node host 通过 `openclaw node run --node-id mimo2api-deep-node-6875021188` 启动。
+- 首次连接触发 `device.pair` 的 node role pending；批准后再次后台启动 node host。
+- `node.list` 显示 connected node，commands 包含 `browser.proxy/system.run/system.run.prepare/system.which`。
+- operator 调用 `node.invoke`：`command=system.which`、`params={"bins":["sh"]}`。
+- 成功返回 `payload.bins.sh=/usr/bin/sh`，证明 `node.invoke -> node.invoke.request -> node.invoke.result` 已跑通。
+
+本轮停止了后台 node host 进程；`6875021188` 的 paired device 保留 node role/token，便于后续验证 `system.run`、`browser.proxy` 等更高影响命令。当前 live server 仍未暴露 `node.pair.remove`，所以不做破坏性清理。

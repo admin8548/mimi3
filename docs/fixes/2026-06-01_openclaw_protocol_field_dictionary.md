@@ -959,3 +959,92 @@ unknown method: node.pair.remove
 虽然 npm 新版 `openclaw@2026.5.28` 源码已经包含 `node.pair.remove`，当前 live sandbox 版本尚不支持。因此继续批准 node pairing 可能留下无法通过 RPC 清理的 paired node 状态。
 
 结论：如果要完成 `node.invoke -> node.invoke.request -> node.invoke.result` 闭环，推荐下一步先获得明确授权：允许在一个非关键 uid 上留下一个临时 paired node，或先找到 live `2026.3.12` 的 paired-node 恢复/清理路径。
+
+## 20. 继续推进补充（node.invoke 真实闭环完成）
+
+### 20.1 这个问题要实现的功能
+
+`node.invoke.*` 不是 mimo2api 普通聊天转发链路的必需项，而是 OpenClaw 的 **远端 node host 执行/扩展能力**：
+
+- operator 侧通过 `node.invoke` 向已连接 node 下发命令；
+- node host 收到 `node.invoke.request`；
+- node host 执行本地 capability/command，例如 `system.which`、`system.run`、`browser.proxy`；
+- node host 通过 `node.invoke.result` 回传结构化结果。
+
+这类能力可用于后续实现跨节点执行、远端 shell/工具能力发现、远端浏览器代理、node host health check，以及把 OpenClaw 官方 node 生态纳入 mimo2api 观测/调度。
+
+### 20.2 uid=6875021188 上的闭环验证
+
+用户指定可使用 `6875021188` 作为 node 深测目标。本轮按最小影响路径完成：
+
+1. operator 连接 `uid=6875021188`；
+2. 远端 sandbox 内执行官方 node host：
+
+```text
+openclaw node run --node-id mimo2api-deep-node-6875021188 --display-name mimo2api-deep-node-6875021188
+```
+
+3. 首次触发 `device.pair` pending：
+
+```text
+clientId=node-host
+clientMode=node
+role=node
+scopes=[]
+isRepair=true
+```
+
+4. 批准该 device pairing 后，后台启动官方 node host；
+5. `node.list` 出现 connected node：
+
+```json
+{
+  "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+  "displayName": "mimo2api-deep-node-6875021188",
+  "version": "2026.3.12",
+  "caps": ["browser", "system"],
+  "commands": ["browser.proxy", "system.run", "system.run.prepare", "system.which"],
+  "paired": true,
+  "connected": true
+}
+```
+
+6. operator 调用：
+
+```json
+{
+  "method": "node.invoke",
+  "params": {
+    "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+    "command": "system.which",
+    "params": {"bins": ["sh"]},
+    "idempotencyKey": "<uuid>"
+  }
+}
+```
+
+7. 成功返回：
+
+```json
+{
+  "ok": true,
+  "command": "system.which",
+  "payload": {"bins": {"sh": "/usr/bin/sh"}},
+  "payloadJSON": "{\"bins\":{\"sh\":\"/usr/bin/sh\"}}"
+}
+```
+
+结论：`node.invoke -> node.invoke.request -> node.invoke.result` 的真实 closed-loop 已完成。
+
+### 20.3 状态与恢复说明
+
+本轮已停止后台 node host 进程；停止后 `node.list` 显示该 node：
+
+```text
+paired=true
+connected=false
+caps=[]
+commands=[]
+```
+
+注意：当前 live server `2026.3.12` 没有可用的 `node.pair.remove` RPC；本轮闭环通过 `device.pair.approve` 给 `uid=6875021188` 的既有 paired device 增加了 node role/token。该 uid 是用户指定可用于 node 深测的目标，因此保留该授权以便后续复测 `system.run` / `browser.proxy` 等 node command。

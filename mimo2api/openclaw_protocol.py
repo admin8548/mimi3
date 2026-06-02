@@ -584,9 +584,15 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "node.invoke": {
         "required": ["nodeId", "command", "idempotencyKey"],
-        "meaning": "调用 node 命令；参数是 command/idempotencyKey，不是 method；真实闭环需要先完成 device.pair 的 node 角色授权，再完成 node.pair 授权。自定义本地客户端经云端 ws/proxy 连接仍卡在 DEVICE_AUTH_SIGNATURE_INVALID；远端 sandbox 内官方 openclaw node run 已可越过签名校验并到达 pairing required。",
-        "known_good": {"nodeId": "node-id", "command": "system.which", "params": {"cmd": "sh"}, "idempotencyKey": "uuid"},
-        "blocked_by": "official node pairing approval cannot be safely restored via live RPC yet",
+        "meaning": "调用已连接 node 执行命令；参数是 nodeId/command/idempotencyKey，可带 params。真实闭环已用远端 sandbox 内官方 openclaw node run 验证：device.pair 授权 node role 后，node.list 出现 connected node，node.invoke(system.which) 触发 node.invoke.request/result 并返回 /usr/bin/sh。",
+        "known_good": {"nodeId": "node-id", "command": "system.which", "params": {"bins": ["sh"]}, "idempotencyKey": "uuid"},
+        "verified_closed_loop": {
+            "uid": "6875021188",
+            "command": "system.which",
+            "params": {"bins": ["sh"]},
+            "result_shape": {"ok": True, "payload": {"bins": {"sh": "/usr/bin/sh"}}, "payloadJSON": "json string"},
+            "node_id_source": "device.id from paired device identity",
+        },
         "official_node_client": {
             "command": "openclaw node run",
             "client_id": "node-host",
@@ -597,6 +603,7 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
             "commands": ["system.run.prepare", "system.run", "system.which"],
             "protocol": 3,
         },
+        "state_note": "本次闭环选择 uid=6875021188；为保留可复现能力，该 uid 的 paired device 已追加 node role/token，后台 node 进程已停止。",
     },
     "node.pending.pull": {
         "required": [],
@@ -862,6 +869,6 @@ def build_protocol_catalog(features: dict[str, Any] | None = None) -> dict[str, 
             "events.agent/tool 子流完整字段仍需在真实工具调用中继续采样。",
             "chat.abort 是否可中止 agent run 仍需低影响验证。",
             "browser.request 已确认管理路径与 snapshot，但页面级动作应通过 tabs.wsUrl 的 CDP 通道继续验证。",
-            "node.invoke.* 仍缺完整闭环；官方 node run 已证明签名可通过并进入 pairing required，但 device.pair/node.pair 批准后缺少安全恢复路径。",
+            "node.invoke.* 已完成 system.which 闭环；system.run、browser.proxy 等更高影响 node command 仍需单独按最小副作用策略验证。",
         ],
     }
