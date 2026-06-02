@@ -636,3 +636,48 @@ class ResponsesBoundaryCompatibilityTests(unittest.TestCase):
         })
         self.assertEqual(converted["max_tokens"], 123)
         self.assertEqual(converted["tool_choice"], {"type": "function", "function": {"name": "lookup"}})
+
+
+class ManagerObservabilityTests(unittest.TestCase):
+    def test_load_all_users_updates_manager_status(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        import mimo2api.manager as manager
+        from mimo2api.gateway_state import state
+        from mimo2api.metrics_store import build_gateway_stats
+
+        old_users_dir = manager.USERS_DIR
+        old_status = dict(state.manager_status)
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                (root / "user_good.json").write_text(json.dumps({
+                    "userId": "u1",
+                    "serviceToken": "st",
+                    "xiaomichatbot_ph": "ph",
+                }), "utf-8")
+                (root / "user_bad.json").write_text("{bad", "utf-8")
+                manager.USERS_DIR = td
+
+                users = manager.load_all_users()
+                self.assertEqual(list(users.keys()), ["u1"])
+                self.assertEqual(state.manager_status["user_files"]["valid_count"], 1)
+                self.assertEqual(state.manager_status["user_files"]["invalid_count"], 1)
+                self.assertEqual(build_gateway_stats(0)["manager"]["user_files"]["valid_count"], 1)
+        finally:
+            manager.USERS_DIR = old_users_dir
+            state.manager_status.clear()
+            state.manager_status.update(old_status)
+
+
+class AdminErrorCompatibilityTests(unittest.TestCase):
+    def test_user_add_invalid_uid_keeps_detail_and_adds_error_object(self):
+        resp = TestClient(app).post("/api/users/add", json={
+            "raw_text": 'userId="bad!"; serviceToken="st"; xiaomichatbot_ph="ph"'
+        })
+        self.assertEqual(resp.status_code, 400)
+        payload = resp.json()
+        self.assertIn("detail", payload)
+        self.assertEqual(payload["error"]["code"], 400)
+        self.assertEqual(payload["error"]["type"], "invalid_request_error")

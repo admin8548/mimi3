@@ -167,3 +167,27 @@ python3 -m unittest discover -s tests -v
 - `ResponsesBoundaryCompatibilityTests.test_tool_choice_and_max_output_tokens_are_mapped`
 
 当前测试数：32。
+
+## Follow-up Batch: Manager Observability + Admin Error Compatibility
+
+### Outcome
+
+- `GatewayState` 新增 `manager_status`。
+- Manager 用户加载会记录：
+  - 有效用户文件数量
+  - 非法用户文件数量
+  - 非法样例
+  - 排除账号列表
+  - 实际 managed user 数量和 uid 列表
+  - manager 状态、task 数量、task 名称
+- `/api/stats` 新增 `manager` 字段，暴露上述 manager 状态摘要。
+- WebUI 管理面错误响应新增兼容 `error` object，同时保留原 `detail` 字段，避免破坏旧前端/脚本。
+
+### Verification
+
+新增回归测试：
+
+- `ManagerObservabilityTests.test_load_all_users_updates_manager_status`
+- `AdminErrorCompatibilityTests.test_user_add_invalid_uid_keeps_detail_and_adds_error_object`
+
+当前测试数：34。

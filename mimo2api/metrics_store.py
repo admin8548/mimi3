@@ -730,6 +730,7 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
             "observed_uids": len(state.openclaw_features_by_uid),
             "by_uid": dict(state.openclaw_features_by_uid),
         },
+        "manager": dict(state.manager_status),
         "routes": routes,
         "nodes": nodes,
     }

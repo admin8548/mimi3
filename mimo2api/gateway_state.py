@@ -28,6 +28,7 @@ class GatewayState:
         self.recent_openclaw_events: deque = deque(maxlen=1000)
         # uid -> sanitized hello-ok protocol feature summary from OpenClaw.
         self.openclaw_features_by_uid: Dict[str, Any] = {}
+        self.manager_status: Dict[str, Any] = {}
 
     @staticmethod
     def _default_metrics() -> Dict[str, Any]:

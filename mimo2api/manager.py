@@ -157,6 +157,11 @@ async def wait_for_gateway_uid_bridge(uid: str, *, since_ts: float, timeout: int
 def load_all_users() -> dict:
     """从 users/ 目录读取所有用户的登录凭证"""
     records, invalid_records = load_user_records(USERS_DIR)
+    state.manager_status["user_files"] = {
+        "valid_count": len(records),
+        "invalid_count": len(invalid_records),
+        "invalid_samples": invalid_records[:20],
+    }
     if invalid_records:
         logger.warning(f"users/ 中跳过 {len(invalid_records)} 个非法用户文件: {invalid_records[:5]}")
     return {str(record["userId"]): record for record in records}
@@ -970,6 +975,10 @@ class AccountManager:
 
 async def start_manager_tasks():
     logger.info("🚀 mimo2api 分布式并发账号池控制引擎 (Manager) 已点火启动!")
+    state.manager_status.update({
+        "status": "starting",
+        "started_at": int(time.time()),
+    })
     users = load_all_users()
     excluded_user_ids = {
         uid.strip()
@@ -983,7 +992,13 @@ async def start_manager_tasks():
             f"已按 MIMO_MANAGER_EXCLUDE_USER_IDS 排除 {before_count - len(users)} 个账号: "
             f"{','.join(sorted(excluded_user_ids))}"
         )
+    state.manager_status.update({
+        "excluded_user_ids": sorted(excluded_user_ids),
+        "managed_user_count": len(users),
+        "managed_user_ids": sorted(users.keys()),
+    })
     if not users:
+        state.manager_status["status"] = "no_users"
         logger.error("非常遗憾, 你还没往 users 目录下存入有效的新版数据配置！")
         return
     
@@ -1007,8 +1022,15 @@ async def start_manager_tasks():
             t = asyncio.create_task(_delayed_start(manager, i * 3.0), name=f"account-manager-{uid}")
             tasks.append(t)
 
+        state.manager_status.update({
+            "status": "running",
+            "task_count": len(tasks),
+            "task_names": [task.get_name() for task in tasks],
+        })
+
         await asyncio.gather(*tasks, return_exceptions=True)
     except asyncio.CancelledError:
+        state.manager_status["status"] = "cancelled"
         await cancel_and_wait(tasks)
         raise
 

@@ -25,6 +25,20 @@ router = APIRouter()
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def admin_error(message: str, status_code: int, error_type: str = "invalid_request_error") -> JSONResponse:
+    return JSONResponse(
+        {
+            "detail": message,
+            "error": {
+                "message": message,
+                "type": error_type,
+                "code": status_code,
+            },
+        },
+        status_code=status_code,
+    )
+
+
 @router.get("/")
 async def root_page():
     return RedirectResponse(url="/webui", status_code=307)
@@ -62,12 +76,12 @@ async def api_auth_login(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"detail": "请求体不是合法 JSON"}, status_code=400)
+        return admin_error("请求体不是合法 JSON", 400)
 
     username = str(body.get("username", "")).strip()
     password = str(body.get("password", ""))
     if not verify_webui_login(username, password):
-        return JSONResponse({"detail": "用户名或密码错误"}, status_code=401)
+        return admin_error("用户名或密码错误", 401, "authentication_error")
 
     response = JSONResponse({"ok": True, "enabled": True, "username": get_webui_username()})
     response.set_cookie(
@@ -150,10 +164,10 @@ async def api_users_add(request: Request):
         ph = parsed.get("xiaomichatbot_ph")
         
         if not uid or not st or not ph:
-            return JSONResponse({"detail": "缺少必要字段 userId, serviceToken 或 xiaomichatbot_ph"}, status_code=400)
+            return admin_error("缺少必要字段 userId, serviceToken 或 xiaomichatbot_ph", 400)
         uid = uid.strip()
         if not is_valid_user_id(uid):
-            return JSONResponse({"detail": "userId 只能包含字母、数字、下划线、点和短横线，长度 1-128"}, status_code=400)
+            return admin_error("userId 只能包含字母、数字、下划线、点和短横线，长度 1-128", 400)
             
         os.makedirs(USERS_DIR, exist_ok=True)
         target_file = build_user_file_path(uid, USERS_DIR)
@@ -169,15 +183,15 @@ async def api_users_add(request: Request):
             
         return JSONResponse({"status": "ok", "userId": uid})
     except Exception as e:
-        return JSONResponse({"detail": str(e)}, status_code=500)
+        return admin_error(str(e), 500, "server_error")
 
 @router.delete("/api/users/delete/{uid}")
 async def api_users_delete(uid: str):
     uid = uid.strip()
     if not is_valid_user_id(uid):
-        return JSONResponse({"detail": "非法 userId"}, status_code=400)
+        return admin_error("非法 userId", 400)
     target_file = build_user_file_path(uid, USERS_DIR)
     if target_file.exists():
         target_file.unlink()
         return JSONResponse({"status": "ok"})
-    return JSONResponse({"detail": "User not found"}, status_code=404)
+    return admin_error("User not found", 404, "not_found")
