@@ -218,3 +218,31 @@ python3 -m unittest discover -s tests -v
 - `ModelMappingAdminErrorCompatibilityTests.test_model_mapping_delete_not_found_has_error_object`
 
 当前测试数：36。
+
+## Follow-up Batch: Test Split + Final Audit
+
+### Outcome
+
+- 原单文件 `tests/test_gateway_diagnostics.py` 已按主题拆分为：
+  - `tests/test_admin_errors.py`
+  - `tests/test_config_users_manager.py`
+  - `tests/test_dispatch_stats.py`
+  - `tests/test_gateway_routes.py`
+  - `tests/test_openclaw_protocol.py`
+  - `tests/test_responses_converter.py`
+- 保持测试数量不变：36。
+- 最终审计结果：
+  - `record_error(...)` 调用均已带明确分类，或使用默认 `gateway` 的函数定义路径。
+  - 已清理主代码中的手写 bool 环境变量解析，统一走 `get_env_bool`。
+  - `/api/diagnostics/routes.config` 补充 metrics DB / snapshot / bucket / retention 摘要。
+  - Python 编译、unittest、Docker Compose 配置 smoke 均通过。
+
+### Verification
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m py_compile main.py mimo2api/*.py
+docker compose config
+```
+
+当前测试数：36。

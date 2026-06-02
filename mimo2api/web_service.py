@@ -47,11 +47,13 @@ from .auth import (
     require_ai_request,
     require_webui_request,
 )
-from .config import get_env_float, get_env_int
+from .config import get_env_bool, get_env_float, get_env_int
 from .openclaw_protocol import build_protocol_catalog
 from .metrics_store import (
     METRICS_BUCKET_SECONDS,
+    METRICS_DB_PATH,
     METRICS_RETENTION_DAYS,
+    METRICS_SNAPSHOT_PATH,
     build_gateway_stats,
     extract_usage_from_sse_chunk,
     init_metrics_db,
@@ -244,7 +246,7 @@ WEBUI_PUBLIC_PATHS = {
     "/webui",
 }
 PREFERRED_UID = os.getenv("MIMO_PREFERRED_UID", "").strip()
-ALLOW_LEGACY_WS_FALLBACK = os.getenv("MIMO_ALLOW_LEGACY_WS_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_LEGACY_WS_FALLBACK = get_env_bool("MIMO_ALLOW_LEGACY_WS_FALLBACK", False)
 KEY_DIAGNOSTIC_ROUTES = {
     "/v1/chat/completions",
     "/v1/responses",
@@ -287,6 +289,10 @@ def build_route_diagnostics() -> dict[str, Any]:
             "web_auth_enabled": is_web_auth_enabled(),
             "model_mapping_path": str(MODEL_MAPPING_FILE),
             "process_lock_path": PROCESS_LOCK_PATH,
+            "metrics_db_path": METRICS_DB_PATH,
+            "metrics_snapshot_path": METRICS_SNAPSHOT_PATH,
+            "metrics_bucket_seconds": METRICS_BUCKET_SECONDS,
+            "metrics_retention_days": METRICS_RETENTION_DAYS,
             "preferred_uid_configured": bool(PREFERRED_UID),
             "allow_legacy_ws_fallback": ALLOW_LEGACY_WS_FALLBACK,
             "max_pending_queues": MAX_PENDING_QUEUES,

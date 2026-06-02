@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from .config import get_env_int
+from .config import get_env_bool, get_env_int
 from .gateway_state import state
 
 METRICS_BUCKET_SECONDS = get_env_int("MIMO_METRICS_BUCKET_SECONDS", 1800, min_value=60)
@@ -627,7 +627,7 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
     attempt_total = int(metrics["attempts_total"])
     token_metrics = metrics["tokens"]
     preferred_uid = os.getenv("MIMO_PREFERRED_UID", "").strip()
-    legacy_fallback_enabled = os.getenv("MIMO_ALLOW_LEGACY_WS_FALLBACK", "false").strip().lower() in {"1", "true", "yes", "on"}
+    legacy_fallback_enabled = get_env_bool("MIMO_ALLOW_LEGACY_WS_FALLBACK", False)
     excluded_user_ids = sorted(
         uid.strip()
         for uid in os.getenv("MIMO_MANAGER_EXCLUDE_USER_IDS", "").split(",")
