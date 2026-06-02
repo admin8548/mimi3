@@ -410,3 +410,12 @@ update.available
 - `node.invoke.*`：确认 `node.invoke` 真正参数是 `nodeId + command + idempotencyKey`；`node.pending.pull/ack/invoke.result/node.event` 在 operator role 下被拒绝，说明完整 node 状态机需要 node role 或真实 node 连接，当前暂未跑通。
 
 这些结论已同步到 `mimo2api/openclaw_protocol.py` 和字段字典文档。
+
+## 继续推进补充：approval 枚举、agents.files.set、cron.run 与 session 选择修复
+
+继续推进时新增发现：
+
+- 真实 approval id 上测试多组批准候选，均返回 `invalid decision`；所有测试 approval 均已用 `deny` 清理。当前只确认 `deny` 有效，批准枚举仍需源码/schema 反推。
+- `agents.files.set` 已对 `HEARTBEAT.md` 完成备份、写入 marker、读取确认、恢复、最终一致性确认。
+- `cron.run` 已真实触发 `cron` started/finished 事件；finished 包含 `summary/sessionId/sessionKey/usage` 等字段。因未配置 delivery channel，最终 `status=error`，但 agent turn 已产出 `CRON_PROBE_OK`。
+- 重要稳定性修复：`cron.run` 生成的 `agent:main:cron:...` session 会排在 `sessions.list` 首位，旧 manager 会误选它。已清理临时 cron session，并修复 session 选择逻辑为优先 `agent:main:main`。

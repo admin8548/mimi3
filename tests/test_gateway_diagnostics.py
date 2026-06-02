@@ -124,6 +124,7 @@ class OpenClawProtocolCatalogTests(unittest.TestCase):
         self.assertEqual(classify_method("sessions.compact")["parameter_hint"]["required"], ["key"])
         self.assertEqual(classify_event("agent")["hint"]["streams"]["assistant"].startswith("模型文本流"), True)
         self.assertIn("request", classify_event("exec.approval.requested")["hint"]["payload_fields"])
+        self.assertIn("sessionKey", classify_event("cron")["hint"]["payload_fields"])
 
     def test_hello_payload_summary_is_sanitized_and_counted(self):
         from mimo2api.openclaw_protocol import summarize_hello_payload
@@ -200,3 +201,28 @@ class OpenClawEventSummaryTests(unittest.TestCase):
         self.assertEqual(summary["args_keys"], ["cmd"])
         self.assertNotIn("secret command", str(summary))
         self.assertNotIn("call-secret", str(summary))
+
+
+class OpenClawSessionSelectionTests(unittest.TestCase):
+    def test_prefers_canonical_main_over_cron_session(self):
+        from mimo2api.manager import choose_openclaw_session_key
+
+        sessions = [
+            {"key": "agent:main:cron:job:run:session"},
+            {"key": "agent:main:main"},
+        ]
+        self.assertEqual(choose_openclaw_session_key(sessions), "agent:main:main")
+
+    def test_falls_back_to_first_non_cron_session(self):
+        from mimo2api.manager import choose_openclaw_session_key
+
+        sessions = [
+            {"key": "agent:main:cron:job:run:session"},
+            {"key": "agent:main:custom"},
+        ]
+        self.assertEqual(choose_openclaw_session_key(sessions), "agent:main:custom")
+
+    def test_uses_fallback_when_no_sessions(self):
+        from mimo2api.manager import choose_openclaw_session_key
+
+        self.assertEqual(choose_openclaw_session_key([], fallback="agent:main:main"), "agent:main:main")

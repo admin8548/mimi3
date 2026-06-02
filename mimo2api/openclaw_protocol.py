@@ -446,7 +446,7 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "agents.files.set": {
         "required": ["agentId", "name", "content"],
-        "meaning": "写入指定 agent workspace 固定文件；只允许受支持的 name，任意临时文件名会返回 unsupported file。",
+        "meaning": "写入指定 agent workspace 固定文件；只允许受支持的 name，任意临时文件名会返回 unsupported file；HEARTBEAT.md 已验证可备份、写入、读取并恢复。",
         "known_good": {"agentId": DEFAULT_AGENT_ID, "name": "HEARTBEAT.md", "content": "..."},
     },
     "exec.approvals.get": {
@@ -472,7 +472,7 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "exec.approval.resolve": {
         "required": ["id", "decision"],
-        "meaning": "解析审批请求；实测 decision=deny 是有效枚举，未知 id 返回 unknown/expired；真实 requested/resolved 事件已观察到。",
+        "meaning": "解析审批请求；实测 decision=deny 是有效拒绝枚举；allow/approve/approved/accept/yes/approveOnce/allowOnce/permit/grant/ok/trusted 等批准候选均 invalid，批准枚举仍未发现。",
         "known_good": {"id": "approval-id", "decision": "deny"},
     },
     "browser.request": {
@@ -593,7 +593,20 @@ EVENT_HINTS: dict[str, dict[str, Any]] = {
     "heartbeat": {"meaning": "心跳/保活事件。"},
     "presence": {"meaning": "gateway/node presence 变化。"},
     "tick": {"meaning": "服务端周期 tick。"},
-    "cron": {"meaning": "cron 任务状态或运行事件。"},
+    "cron": {
+        "meaning": "cron 任务状态或运行事件。",
+        "payload_fields": {
+            "jobId": "cron job id。",
+            "action": "started/finished 等动作。",
+            "status": "finished 时的状态；实测可为 error。",
+            "summary": "cron agent turn 摘要文本。",
+            "sessionId": "cron run 创建的 session id。",
+            "sessionKey": "cron run session key，形如 agent:main:cron:<job>:run:<session>。",
+            "runAtMs": "运行时间毫秒。",
+            "durationMs": "运行耗时毫秒。",
+            "usage": "token usage；摘要中需脱敏。",
+        },
+    },
     "node.invoke.request": {"meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列。"},
     "exec.approval.requested": {
         "meaning": "审批请求已创建。",

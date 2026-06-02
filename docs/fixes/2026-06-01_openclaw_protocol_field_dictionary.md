@@ -629,3 +629,70 @@ name, schedule, sessionTarget, payload
 - `cron.add/run/remove`：已确认可创建临时 cron 并删除。
 - `config.patch/apply`：已确认 baseHash 机制，恢复策略已掌握。
 - `node.invoke.*`：仍未有真实 node 目标，因此未完成完整闭环。
+
+## 16. 继续推进补充：approval 枚举、HEARTBEAT 写入恢复、cron.run 事件与 session 污染
+
+### 16.1 Approval 批准枚举候选
+
+对真实 approval id 逐个测试了以下候选：
+
+```text
+allow, approve, approved, accept, yes,
+approveOnce, approve_once, allowOnce, allow_once, allow_once_for_command,
+allowAlways, allow_always, always, permit, grant, ok, allowlist, trusted
+```
+
+结果均为：
+
+```text
+invalid decision
+```
+
+每个无效候选都随后使用 `decision=deny` 清理。因此目前只确认 `deny` 是有效决策枚举，批准枚举仍未发现，可能需要从前端源码/配置 schema 反推而不是盲猜。
+
+### 16.2 `agents.files.set` 固定文件写入恢复
+
+已对 `HEARTBEAT.md` 做最小有状态验证：
+
+1. `agents.files.get agentId=main name=HEARTBEAT.md` 备份原内容；
+2. `agents.files.set` 写入临时注释行；
+3. 再次 `get` 确认 marker 存在；
+4. `agents.files.set` 恢复原内容；
+5. 最终 `get` 确认 `restored_equal=true`。
+
+结论：`agents.files.set` 对固定白名单文件可用，写入结果返回文件 metadata 与 content。
+
+### 16.3 `cron.run` 真实事件
+
+创建临时 cron job 后执行 `cron.run`，观察到 `cron` 事件：
+
+- `action=started`
+- `action=finished`
+
+finished payload 关键字段：
+
+```text
+jobId, action, status, error, summary, deliveryStatus,
+sessionId, sessionKey, runAtMs, durationMs, model, provider, usage
+```
+
+本次由于未配置 channel，finished 事件 `status=error`，但 `summary=CRON_PROBE_OK` 说明 agent turn 实际执行完成，只是 delivery 阶段失败。
+
+### 16.4 cron.run 造成 session 排序污染
+
+真实 `cron.run` 会创建：
+
+```text
+agent:main:cron:<jobId>:run:<sessionId>
+```
+
+该 cron session 一度排在 `sessions.list` 第一项，导致旧 manager 逻辑会把 `session_key` 选成 cron session，而不是 `agent:main:main`。
+
+已清理该 cron session，并修复 manager：
+
+- 优先选择 `agent:main:main`；
+- 其次选择 `main`；
+- 再选择第一个非 `:cron:` / `:run:` session；
+- 最后才 fallback。
+
+这避免后续 bridge 注入、chat.history 或关机指令落入 cron 临时上下文。

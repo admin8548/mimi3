@@ -297,6 +297,33 @@ def _response_details(resp: httpx.Response) -> tuple[dict | None, str]:
 
 # ----------------- Native Claw Client实现 -----------------
 
+
+def choose_openclaw_session_key(sessions: list, *, fallback: str = "agent:main:main") -> str:
+    """Choose the stable interactive main session from sessions.list.
+
+    OpenClaw may place transient cron sessions first after cron.run, e.g.
+    agent:main:cron:<job>:run:<session>.  Bridge injection and normal chat
+    initialization must prefer the canonical interactive main session.
+    """
+    candidates = []
+    for session in sessions if isinstance(sessions, list) else []:
+        if not isinstance(session, dict):
+            continue
+        key = session.get("key")
+        if isinstance(key, str) and key.strip():
+            candidates.append(key.strip())
+
+    for preferred in ("agent:main:main", "main"):
+        if preferred in candidates:
+            return preferred
+
+    for key in candidates:
+        if ":cron:" not in key and ":run:" not in key:
+            return key
+
+    return candidates[0] if candidates else fallback
+
+
 class NativeClawClient:
     def __init__(self, ph: str, cookies: dict, logger_obj: logging.Logger, uid: str = ""):
         self.ph = ph
@@ -308,11 +335,10 @@ class NativeClawClient:
         self.responses = {}
         self.events = []
         self.connected = False
-        # Keep this aligned with the official web UI.  The web frontend
-        # initializes activeSessionKey to "main"; using "agent:main:main"
-        # lands in a different conversation context and can trigger generic
-        # refusal responses even when the same prompt works in the browser.
-        self.session_key = "main"
+        # Stable fallback; initialize_chat_context will prefer the canonical
+        # interactive main session over transient cron/run sessions returned by
+        # sessions.list.
+        self.session_key = "agent:main:main"
 
     async def request(self, method: str, params: dict | None = None, timeout: int = 30):
         """Send a raw OpenClaw websocket RPC and wait for its response payload."""
@@ -356,10 +382,7 @@ class NativeClawClient:
                 timeout=20,
             )
             sessions = payload.get("sessions") if isinstance(payload, dict) else []
-            if isinstance(sessions, list) and sessions:
-                first_key = sessions[0].get("key")
-                if isinstance(first_key, str) and first_key.strip():
-                    self.session_key = first_key.strip()
+            self.session_key = choose_openclaw_session_key(sessions, fallback=self.session_key)
             self.logger.info(f"已初始化 Claw 会话上下文: sessionKey={self.session_key}")
         except Exception as e:
             self.logger.warning(f"sessions.list 初始化失败，沿用 sessionKey={self.session_key}: {e}")
