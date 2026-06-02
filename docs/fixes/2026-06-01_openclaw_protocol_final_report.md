@@ -429,3 +429,13 @@ update.available
 - `/profiles` 返回 profile/cdpPort/cdpUrl/running/tabCount 等；`/tabs` 返回 targetId/title/url/wsUrl/type。
 - 多个常见 CDP 路径仍为 Not Found，因此 `browser.request` 是 OpenClaw 管理 API，而不是裸 Chrome CDP HTTP API。
 - 用户说明 `AGENTS.md` / `SOUL.md` 可能不是真实最新文件，本轮已明确不写入这些核心文件；若后续需要验证 set，必须由用户提供最新内容并恢复到该版本。
+
+## 继续推进补充：browser snapshot、cron delivery 成功路径、node 配对阻断点
+
+本次在不 push 的前提下，把已验证的新结论固化到协议目录：
+
+- `browser.request`：新增确认 `POST /navigate` 与 `GET /snapshot`。`/navigate` 需要 `body.url`；`data:` URL 被拒绝；`/snapshot` 返回 `ok/format/targetId/url/snapshot/refs`。`/tabs` 暴露本地 CDP `wsUrl`，说明 evaluate/click/type/screenshot 等更深页面操作应走 CDP websocket，而不是额外 HTTP 路径。
+- `cron`：`delivery.mode=none + sessionTarget=isolated` 已跑通成功路径，finished 为 `status=ok`，summary 为 `CRON_DEEP_OK`，`deliveryStatus=not-delivered`。`announce` 在无 channel 配置时 agent turn 会完成但最终 delivery error。
+- `node`：`node.pair.request/approve/reject/verify` schema 已确认；`node.pair.verify` 必填是 `nodeId + token`。官方 node client 入口为 `openclaw node run`，连接形态已收敛到 `client.id=cli/client.mode=node/role=node/caps=["system"]` 与 Ed25519 设备签名，但真实连接仍被 `DEVICE_AUTH_SIGNATURE_INVALID` 阻断。
+
+当前结论：browser 与 cron 的主要阻断点已解除；`node.invoke.*` 真实闭环仍是唯一核心缺口，不建议 push 到远端前宣称完整协议闭环已完成。

@@ -119,14 +119,24 @@ class OpenClawProtocolCatalogTests(unittest.TestCase):
         self.assertIn("allow-once", classify_method("exec.approval.resolve")["parameter_hint"]["observed_decisions"])
         self.assertEqual(classify_method("browser.request")["parameter_hint"]["required"], ["method", "path"])
         self.assertIn("/tabs", classify_method("browser.request")["parameter_hint"]["observed_paths"])
+        self.assertIn("/snapshot", classify_method("browser.request")["parameter_hint"]["observed_paths"])
+        self.assertEqual(
+            classify_method("browser.request")["parameter_hint"]["body_schemas"]["/navigate"]["body"]["url"],
+            "about:blank",
+        )
         self.assertEqual(classify_method("agents.files.get")["parameter_hint"]["required"], ["agentId", "name"])
         self.assertEqual(classify_method("cron.add")["parameter_hint"]["required"], ["name", "schedule", "sessionTarget", "payload"])
+        self.assertEqual(classify_method("cron.add")["parameter_hint"]["known_good"]["delivery"]["mode"], "none")
+        self.assertEqual(classify_method("cron.run")["parameter_hint"]["observed_finished"]["delivery_none"]["status"], "ok")
         self.assertEqual(classify_method("config.patch")["parameter_hint"]["required"], ["raw", "baseHash"])
+        self.assertEqual(classify_method("node.pair.verify")["parameter_hint"]["required"], ["nodeId", "token"])
         self.assertEqual(classify_method("node.invoke")["parameter_hint"]["required"], ["nodeId", "command", "idempotencyKey"])
+        self.assertIn("DEVICE_AUTH_SIGNATURE_INVALID", classify_method("node.invoke")["parameter_hint"]["meaning"])
         self.assertEqual(classify_method("sessions.compact")["parameter_hint"]["required"], ["key"])
         self.assertEqual(classify_event("agent")["hint"]["streams"]["assistant"].startswith("模型文本流"), True)
         self.assertIn("request", classify_event("exec.approval.requested")["hint"]["payload_fields"])
         self.assertIn("sessionKey", classify_event("cron")["hint"]["payload_fields"])
+        self.assertIn("deliveryStatus", classify_event("cron")["hint"]["payload_fields"])
 
     def test_hello_payload_summary_is_sanitized_and_counted(self):
         from mimo2api.openclaw_protocol import summarize_hello_payload

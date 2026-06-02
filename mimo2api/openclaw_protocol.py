@@ -478,9 +478,32 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "browser.request": {
         "required": ["method", "path"],
-        "meaning": "向 OpenClaw browser 管理端发请求；GET / 返回 runtime 状态；POST /start 与 POST /stop 可启停 browser；GET /profiles 返回 profile 状态；GET /tabs 返回 tab/target/wsUrl；CDP /json/* 路径未直接暴露。",
+        "optional": ["body"],
+        "meaning": "向 OpenClaw browser 管理端发请求；GET / 返回 runtime 状态；POST /start 与 POST /stop 可启停 browser；GET /profiles 返回 profile 状态；GET /tabs 返回 tab/target/wsUrl；POST /navigate 需要 body.url；GET /snapshot 返回 AI snapshot/refs；CDP 入口通过 tabs.wsUrl 暴露，本 RPC 未直接代理常见 CDP HTTP 路径。",
         "known_good": {"method": "GET", "path": "/"},
-        "observed_paths": ["/", "/start", "/stop", "/profiles", "/tabs"],
+        "observed_paths": ["/", "/start", "/stop", "/profiles", "/tabs", "/navigate", "/snapshot"],
+        "body_schemas": {"/navigate": {"body": {"url": "about:blank"}}},
+        "rejected_inputs": {"POST /navigate body.url=data:...": "Navigation blocked: unsupported protocol \"data:\""},
+        "not_found_paths": [
+            "/html",
+            "/content",
+            "/dom",
+            "/tree",
+            "/accessibility",
+            "/screenshot",
+            "/reload",
+            "/back",
+            "/forward",
+            "/evaluate",
+            "/click",
+            "/type",
+            "/press",
+            "/new",
+            "/close",
+            "/json/version",
+            "/json/list",
+            "/devtools/browser",
+        ],
     },
     "config.patch": {
         "required": ["raw", "baseHash"],
@@ -499,8 +522,15 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "cron.add": {
         "required": ["name", "schedule", "sessionTarget", "payload"],
-        "meaning": "创建 cron job；schedule 支持 {kind:cron,expr} 或 {kind:every,everyMs}，payload 是对象，服务端会补 payload.kind=agentTurn。",
-        "known_good": {"name": "probe", "schedule": {"kind": "cron", "expr": "0 0 1 1 *"}, "sessionTarget": "none", "payload": {"message": "probe"}},
+        "optional": ["delivery", "wakeMode", "enabled"],
+        "meaning": "创建 cron job；schedule 支持 {kind:cron,expr} 或 {kind:every,everyMs}，payload 是对象，服务端会补 payload.kind=agentTurn；delivery.mode=none + sessionTarget=isolated 已验证可完成 agent turn 且 finished.status=ok。",
+        "known_good": {
+            "name": "probe",
+            "schedule": {"kind": "cron", "expr": "0 0 1 1 *"},
+            "sessionTarget": "isolated",
+            "payload": {"message": "probe"},
+            "delivery": {"mode": "none"},
+        },
     },
     "cron.update": {
         "required": ["jobId", "patch"],
@@ -514,13 +544,38 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "cron.run": {
         "required": ["id"],
-        "meaning": "手动运行 cron job；未知 id 返回 unknown cron job id。",
+        "meaning": "手动运行 cron job；未知 id 返回 unknown cron job id；成功路径返回 enqueued/runId，随后 cron event action=started/finished。",
         "known_good": {"id": "cron-job-id"},
+        "observed_finished": {
+            "delivery_none": {"status": "ok", "delivered": False, "deliveryStatus": "not-delivered"},
+            "delivery_announce_without_channel": {"status": "error", "deliveryStatus": "unknown", "summary_present": True},
+        },
     },
     "sessions.compact": {
         "required": ["key"],
         "meaning": "压缩指定 session；参数名是 key，不接受 sessionKey/keys/dryRun；不存在 key 返回 compacted=false/reason=no sessionId。",
         "known_good": {"key": DEFAULT_SESSION_KEY},
+    },
+    "node.pair.request": {
+        "required": ["nodeId"],
+        "optional": ["isRepair"],
+        "meaning": "为 node 创建配对请求；实测返回 status=pending/request.requestId/nodeId/isRepair/ts/created。",
+        "known_good": {"nodeId": "node-id"},
+    },
+    "node.pair.approve": {
+        "required": ["requestId"],
+        "meaning": "批准 pending node 配对请求；返回 node.nodeId/token/createdAtMs/approvedAtMs。token 需要脱敏保存。",
+        "known_good": {"requestId": "pair-request-id"},
+    },
+    "node.pair.reject": {
+        "required": ["requestId"],
+        "meaning": "拒绝 pending node 配对请求；只处理 pending request，不会删除已批准 paired node，批准后再 reject 返回 unknown requestId。",
+        "known_good": {"requestId": "pair-request-id"},
+    },
+    "node.pair.verify": {
+        "required": ["nodeId", "token"],
+        "meaning": "验证已配对 node token；真实 schema 是 nodeId + token，不是 requestId。",
+        "known_good": {"nodeId": "node-id", "token": "..."},
     },
     "node.pending.enqueue": {
         "required": ["nodeId", "type"],
@@ -529,8 +584,9 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "node.invoke": {
         "required": ["nodeId", "command", "idempotencyKey"],
-        "meaning": "调用 node 命令；参数是 command/idempotencyKey，不是 method；当前环境 node.list 为空，未跑通真实 invoke。",
+        "meaning": "调用 node 命令；参数是 command/idempotencyKey，不是 method；已跑通配对 request/approve/verify schema，但真实 node role 连接仍卡在 DEVICE_AUTH_SIGNATURE_INVALID，因此 node.invoke.request/result 闭环尚未验证。",
         "known_good": {"nodeId": "node-id", "command": "...", "idempotencyKey": "uuid"},
+        "blocked_by": "node role connect device signature validation",
     },
     "node.pending.pull": {
         "required": [],
@@ -601,7 +657,10 @@ EVENT_HINTS: dict[str, dict[str, Any]] = {
             "jobId": "cron job id。",
             "action": "started/finished 等动作。",
             "status": "finished 时的状态；实测可为 error。",
+            "error": "delivery/channel 等失败原因；announce 未配置 channel 时出现。",
             "summary": "cron agent turn 摘要文本。",
+            "delivered": "是否完成外部 delivery；delivery.mode=none 时为 false。",
+            "deliveryStatus": "delivery 结果；实测 none 为 not-delivered，announce 缺 channel 为 unknown。",
             "sessionId": "cron run 创建的 session id。",
             "sessionKey": "cron run session key，形如 agent:main:cron:<job>:run:<session>。",
             "runAtMs": "运行时间毫秒。",
@@ -609,7 +668,12 @@ EVENT_HINTS: dict[str, dict[str, Any]] = {
             "usage": "token usage；摘要中需脱敏。",
         },
     },
-    "node.invoke.request": {"meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列。"},
+    "node.pair.requested": {"meaning": "node.pair.request 创建 pending 请求后的配对事件。"},
+    "node.pair.resolved": {"meaning": "node 配对请求 approve/reject 后的解析事件。"},
+    "node.invoke.request": {
+        "meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列；真实闭环需 node role 连接，当前仍未验证。",
+        "blocked_by": "node role connect device signature validation",
+    },
     "exec.approval.requested": {
         "meaning": "审批请求已创建。",
         "payload_fields": {
@@ -787,6 +851,7 @@ def build_protocol_catalog(features: dict[str, Any] | None = None) -> dict[str, 
         "known_gaps": [
             "events.agent/tool 子流完整字段仍需在真实工具调用中继续采样。",
             "chat.abort 是否可中止 agent run 仍需低影响验证。",
-            "exec.approval.*、browser.request、node.invoke.* 仅完成分类，尚未纳入执行闭环。",
+            "browser.request 已确认管理路径与 snapshot，但页面级动作应通过 tabs.wsUrl 的 CDP 通道继续验证。",
+            "node.invoke.* 仍缺真实 node role 连接闭环；当前阻断点为 DEVICE_AUTH_SIGNATURE_INVALID。",
         ],
     }

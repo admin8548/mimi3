@@ -782,3 +782,113 @@ targetId, title, url, wsUrl, type
 - 当前仅允许读取/记录白名单与元信息；
 - 不写入 `AGENTS.md` / `SOUL.md`；
 - 若后续要验证这些核心文件的 `agents.files.set`，需要用户先提供真实最新内容，再按备份/写入/验证/恢复流程处理。
+
+## 18. 继续推进补充（browser snapshot / cron delivery / node pairing-device auth）
+
+### 18.1 Browser 深层管理路径
+
+继续实测 `browser.request` 后确认：
+
+```text
+POST /navigate
+GET /snapshot
+```
+
+关键参数与行为：
+
+- `POST /navigate` 需要 `body: {"url":"about:blank"}`；把 url 放在顶层 `json`、`data` 或 query 中都不会被识别。
+- `data:` URL 被明确拒绝，错误为 `Navigation blocked: unsupported protocol "data:"`。
+- `GET /snapshot` 返回 `ok/format/targetId/url/snapshot/refs`，当前 `about:blank` 下 snapshot 为空字符串、refs 为空对象。
+- `/tabs` 的 `wsUrl` 形如 `ws://127.0.0.1:<cdpPort>/devtools/page/<targetId>`，说明页面级 CDP 能力应从该 wsUrl 继续连接验证，而不是期待 `browser.request` 暴露额外 HTTP 代理端点。
+
+本轮仍确认为 `Not Found` 的页面操作候选包括：
+
+```text
+GET /html, GET /content, GET /dom, GET /tree, GET /accessibility, GET /screenshot
+POST /reload, POST /back, POST /forward, POST /evaluate, POST /click, POST /type, POST /press, POST /new, POST /close
+```
+
+结论：`browser.request` 已能管理 browser/profile/tab，并能 navigate/snapshot；更深的 evaluate/click/type/screenshot 等应走 `/tabs` 暴露的 CDP websocket。
+
+### 18.2 Cron delivery 成功路径
+
+已验证可复现成功路径：
+
+```json
+{
+  "sessionTarget": "isolated",
+  "delivery": {"mode": "none"},
+  "payload": {"message": "请只回复 CRON_DEEP_OK"}
+}
+```
+
+手动 `cron.run` 后事件序列为：
+
+```text
+action=started
+action=finished, status=ok, summary=CRON_DEEP_OK, delivered=false, deliveryStatus=not-delivered
+```
+
+同时对比验证：`delivery.mode=announce` 在没有 channel 配置时，agent turn 仍会完成并生成 summary，但最终 finished 为：
+
+```text
+status=error, deliveryStatus=unknown, error=Channel is required ...
+```
+
+结论：cron 的“执行成功”和“投递成功”需要分开判断；若只要求定时 agent turn 完成，`delivery.mode=none + sessionTarget=isolated` 是当前最稳定、最低副作用路径。
+
+### 18.3 Node 配对与官方 node 客户端阻断点
+
+新增确认的 node 配对 schema：
+
+| 方法 | 必填 | 结论 |
+|---|---|---|
+| `node.pair.request` | `nodeId` | 返回 pending request，包含 `requestId/nodeId/isRepair/ts` |
+| `node.pair.approve` | `requestId` | 返回 paired node 与 pairing token（需脱敏保存） |
+| `node.pair.reject` | `requestId` | 只处理 pending request；不能删除已批准 paired node |
+| `node.pair.verify` | `nodeId + token` | schema 已确认，不能用 `requestId` 替代 |
+
+官方 node 客户端入口与连接形态已进一步收敛：
+
+```text
+openclaw node run
+default gateway: 127.0.0.1:18789
+default tls: false
+token source: OPENCLAW_GATEWAY_TOKEN or config
+identity source: ~/.openclaw/identity/device.json
+client.id: cli
+client.mode: node
+client.instanceId: nodeId
+role: node
+scopes: []
+caps: ["system"]
+deviceFamily: required
+```
+
+官方设备签名 payload 格式已从源码片段确认：
+
+```text
+["v3", deviceId, clientId, clientMode, role, scopes.join(","), signedAtMs, token, nonce, platform, deviceFamily].join("|")
+```
+
+签名算法为 Ed25519，输出为 base64url。
+
+当前真实 node role 连接仍卡在：
+
+```text
+DEVICE_AUTH_SIGNATURE_INVALID
+```
+
+因此 `node.invoke -> node.invoke.request -> node.invoke.result` 的真实闭环仍未完成；这是当前 OpenClaw 协议目录中最重要的未验证缺口。
+
+### 18.4 状态清理注意事项
+
+本轮通过 `node.pair.request/approve` 创建过临时 paired node。已确认以下 RPC 不能清理已批准 paired node：
+
+```text
+node.pair.remove, node.remove, node.delete, node.unpair => unknown method
+node.pair.reject => only pending request
+node.pair.verify => verify only
+```
+
+因此后续 node 闭环验证必须控制创建数量，并优先找到官方 paired-store 清理路径或复用既有 paired node，避免继续污染持久配对状态。
