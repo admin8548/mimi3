@@ -1048,3 +1048,312 @@ commands=[]
 ```
 
 注意：当前 live server `2026.3.12` 没有可用的 `node.pair.remove` RPC；本轮闭环通过 `device.pair.approve` 给 `uid=6875021188` 的既有 paired device 增加了 node role/token。该 uid 是用户指定可用于 node 深测的目标，因此保留该授权以便后续复测 `system.run` / `browser.proxy` 等 node command。
+
+## 21. 继续推进补充（system.run.prepare/system.run 真实闭环完成）
+
+### 21.1 本轮目标
+
+在 `system.which` 已证明 `node.invoke.request/result` 基础链路可用后，继续按最小副作用策略验证官方 node host 的系统执行链路：
+
+- `system.run.prepare`：无副作用，生成审批/执行计划；
+- `system.run`：真实执行命令，但需要先经过 exec approval；
+- `exec.approval.request(twoPhase)` + `exec.approval.resolve(allow-once)`：确认批准枚举与 node system.run 审批绑定。
+
+本轮仍使用用户指定的 `uid=6875021188` 与既有 paired node：
+
+```text
+nodeId=860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a
+displayName=mimo2api-deep-node-6875021188
+```
+
+### 21.2 源码/schema 修正
+
+基于官方 npm 包 `openclaw@2026.3.12` 的运行时代码确认：
+
+- `system.run.prepare` 的参数使用 `params.command`，类型为 argv 数组；
+- `system.run` 也使用 `params.command` argv 数组，可带 `rawCommand/cwd/env/timeoutMs/sessionKey/runId`；
+- 直接向 `system.run` 塞 `approved=true` 不会绕过审批，gateway 会要求真实 `exec.approval.*` 记录；
+- 有效批准枚举为：`allow-once`、`allow-always`、`deny`。
+
+### 21.3 实测链路
+
+1. operator 连接成功，初始 `node.list` 显示该 node 已 paired 但 offline：
+
+```json
+{
+  "paired": true,
+  "connected": false,
+  "caps": [],
+  "commands": []
+}
+```
+
+2. 通过远端 sandbox 内官方 node host 启动后，`node.list` 显示 connected：
+
+```json
+{
+  "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+  "version": "2026.3.12",
+  "caps": ["browser", "system"],
+  "commands": ["browser.proxy", "system.run", "system.run.prepare", "system.which"],
+  "paired": true,
+  "connected": true
+}
+```
+
+3. `system.run.prepare` 请求：
+
+```json
+{
+  "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+  "command": "system.run.prepare",
+  "params": {
+    "command": ["/usr/bin/printf", "mimo2api-system-run-ok\\n"],
+    "timeoutMs": 5000,
+    "sessionKey": "agent:main:main"
+  }
+}
+```
+
+4. `system.run.prepare` 成功返回 plan：
+
+```json
+{
+  "ok": true,
+  "command": "system.run.prepare",
+  "payload": {
+    "plan": {
+      "argv": ["/usr/bin/printf", "mimo2api-system-run-ok\\n"],
+      "cwd": null,
+      "commandText": "/usr/bin/printf mimo2api-system-run-ok\\n",
+      "commandPreview": null,
+      "agentId": null,
+      "sessionKey": "agent:main:main"
+    }
+  }
+}
+```
+
+5. 未批准直接执行 `system.run` 会被正确拦截：
+
+```text
+UNAVAILABLE: SYSTEM_RUN_DENIED: approval required
+```
+
+6. 创建 two-phase approval：
+
+```json
+{
+  "method": "exec.approval.request",
+  "params": {
+    "id": "<approval uuid>",
+    "twoPhase": true,
+    "systemRunPlan": "<prepare 返回的 plan>",
+    "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+    "host": "node",
+    "sessionKey": "agent:main:main",
+    "timeoutMs": 120000
+  }
+}
+```
+
+返回：
+
+```json
+{
+  "status": "accepted",
+  "id": "<approval uuid>",
+  "createdAtMs": 1780399686521,
+  "expiresAtMs": 1780399806521
+}
+```
+
+7. 批准：
+
+```json
+{"method":"exec.approval.resolve","params":{"id":"<approval uuid>","decision":"allow-once"}}
+```
+
+返回：
+
+```json
+{"ok": true}
+```
+
+8. 携带批准 id 执行 `system.run`：
+
+```json
+{
+  "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+  "command": "system.run",
+  "params": {
+    "command": ["/usr/bin/printf", "mimo2api-system-run-ok\\n"],
+    "rawCommand": "/usr/bin/printf mimo2api-system-run-ok\\n",
+    "runId": "<approval uuid>",
+    "approved": true,
+    "approvalDecision": "allow-once",
+    "timeoutMs": 5000,
+    "sessionKey": "agent:main:main",
+    "suppressNotifyOnExit": true
+  }
+}
+```
+
+成功返回：
+
+```json
+{
+  "ok": true,
+  "command": "system.run",
+  "payload": {
+    "exitCode": 0,
+    "timedOut": false,
+    "success": true,
+    "stdout": "mimo2api-system-run-ok\n",
+    "stderr": "",
+    "error": null
+  },
+  "payloadJSON": "{\"exitCode\":0,\"timedOut\":false,\"success\":true,\"stdout\":\"mimo2api-system-run-ok\\n\",\"stderr\":\"\",\"error\":null}"
+}
+```
+
+### 21.4 状态与恢复
+
+本轮验证结束后已停止后台 node host；停止后 `node.list` 恢复为：
+
+```json
+{
+  "paired": true,
+  "connected": false,
+  "caps": [],
+  "commands": []
+}
+```
+
+完整本地证据（忽略提交，避免数据目录进入仓库）：
+
+```text
+data/stateful_backups5/openclaw_node_system_run_probe.json
+```
+
+结论：`node.invoke(system.run.prepare)` 与带真实 approval 的 `node.invoke(system.run)` 均已完成真实闭环；当前 node 方向剩余核心缺口收敛为 `browser.proxy` 的低副作用验证。
+
+## 22. 继续推进补充（browser.proxy 低副作用闭环完成）
+
+### 22.1 本轮目标
+
+在 `system.which` 与 `system.run.prepare/system.run` 已闭环后，继续验证官方 node host 暴露的剩余 node command：
+
+```text
+browser.proxy
+```
+
+为控制副作用，本轮只验证只读 profile 枚举路径：
+
+```json
+{"method":"GET","path":"/profiles","timeoutMs":3000}
+```
+
+该路径不执行页面导航、点击、截图、PDF、文件下载等动作，仅确认 node-hosted browser proxy 能经 `node.invoke` 返回浏览器 profile 状态。
+
+### 22.2 源码/schema 修正
+
+官方 `openclaw@2026.3.12` node host 中 `browser.proxy` 处理逻辑确认：
+
+- `params.path` 必填；
+- `params.method` 默认为 `GET`，支持 `GET/POST/DELETE` 映射；
+- `params.timeoutMs` 可控制代理请求超时；
+- 可带 `params.profile/query/body`；
+- 返回值是 raw JSON string，gateway 会归一化为 `payload.result` / `payloadJSON`。
+
+### 22.3 实测链路
+
+1. node host 启动后，`node.list` 显示：
+
+```json
+{
+  "caps": ["browser", "system"],
+  "commands": ["browser.proxy", "system.run", "system.run.prepare", "system.which"],
+  "paired": true,
+  "connected": true
+}
+```
+
+2. operator 调用：
+
+```json
+{
+  "method": "node.invoke",
+  "params": {
+    "nodeId": "860d729a39a5ed0ddbec50af1076a90e7c8af38e253597bcbe83668520e20d1a",
+    "command": "browser.proxy",
+    "params": {
+      "method": "GET",
+      "path": "/profiles",
+      "timeoutMs": 3000
+    },
+    "idempotencyKey": "<uuid>"
+  }
+}
+```
+
+3. 成功返回：
+
+```json
+{
+  "ok": true,
+  "command": "browser.proxy",
+  "payload": {
+    "result": {
+      "profiles": [
+        {
+          "name": "openclaw",
+          "cdpPort": 18800,
+          "cdpUrl": "http://127.0.0.1:18800",
+          "running": false,
+          "tabCount": 0,
+          "isDefault": true,
+          "isRemote": false
+        },
+        {
+          "name": "chrome",
+          "cdpPort": 18792,
+          "cdpUrl": "http://127.0.0.1:18792",
+          "running": true,
+          "tabCount": 0,
+          "isDefault": false,
+          "isRemote": false
+        }
+      ]
+    }
+  }
+}
+```
+
+### 22.4 状态与恢复
+
+本轮结束后已停止后台 node host；`node.list` 恢复为：
+
+```json
+{
+  "paired": true,
+  "connected": false,
+  "caps": [],
+  "commands": []
+}
+```
+
+完整本地证据：
+
+```text
+data/stateful_backups5/openclaw_node_browser_proxy_probe.json
+```
+
+结论：官方 node host 当前公开的四个 command 已全部完成真实闭环或低副作用闭环：
+
+- `system.which`
+- `system.run.prepare`
+- `system.run`
+- `browser.proxy`
+
+后续若继续深入，应聚焦 `browser.proxy` 的页面级动作路径，例如 `/snapshot`、`/navigate`、`/screenshot`，但这些会引入浏览器状态变化，应另行制定更严格的最小副作用与清理策略。

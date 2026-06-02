@@ -462,3 +462,27 @@ update.available
 - 成功返回 `payload.bins.sh=/usr/bin/sh`，证明 `node.invoke -> node.invoke.request -> node.invoke.result` 已跑通。
 
 本轮停止了后台 node host 进程；`6875021188` 的 paired device 保留 node role/token，便于后续验证 `system.run`、`browser.proxy` 等更高影响命令。当前 live server 仍未暴露 `node.pair.remove`，所以不做破坏性清理。
+
+## 继续推进补充：node.invoke system.run 闭环已完成
+
+在 `system.which` 闭环后，本轮继续用 `uid=6875021188` 验证 `system.run.prepare/system.run`：
+
+- `system.run.prepare` 参数确认为 `params.command` argv 数组，成功返回 `payload.plan`。
+- 未批准直接执行 `system.run` 会返回 `SYSTEM_RUN_DENIED: approval required`。
+- 使用 `exec.approval.request(twoPhase=true)` 创建审批，再用 `exec.approval.resolve(decision=allow-once)` 批准后，`system.run` 成功执行无害命令：`/usr/bin/printf mimo2api-system-run-ok\n`。
+- 成功 result 包含 `exitCode=0`、`success=true`、`stdout="mimo2api-system-run-ok\n"`。
+- 本轮结束后已停止后台 node host；该 node 仍保持 `paired=true/connected=false`，用于后续复测。
+
+结论：`node.invoke.*` 现已覆盖 `system.which`、`system.run.prepare`、`system.run` 三条真实闭环。剩余 node command 缺口主要是 `browser.proxy` 的低副作用验证。
+
+## 继续推进补充：node.invoke browser.proxy 低副作用闭环已完成
+
+本轮继续验证官方 node host 的 `browser.proxy` command，选择只读路径 `GET /profiles` 以避免页面级副作用。
+
+结果：
+
+- `node.invoke(command=browser.proxy, params={method:"GET", path:"/profiles", timeoutMs:3000})` 成功；
+- 返回 `payload.result.profiles[]`，包含 `openclaw` 与 `chrome` 两个 profile 的 `cdpPort/cdpUrl/running/tabCount/isDefault` 等字段；
+- 验证后已停止 node host，`node.list` 恢复为 `paired=true/connected=false`。
+
+结论：官方 node host 当前公开的 `system.which`、`system.run.prepare`、`system.run`、`browser.proxy` 均已完成闭环验证。剩余研究方向不再是 node command 是否可用，而是更高副作用的 browser 页面级动作路径是否值得继续单独验证。

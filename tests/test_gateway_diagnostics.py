@@ -134,6 +134,15 @@ class OpenClawProtocolCatalogTests(unittest.TestCase):
         self.assertIn("system.which", classify_method("node.invoke")["parameter_hint"]["meaning"])
         self.assertEqual(classify_method("node.invoke")["parameter_hint"]["official_node_client"]["client_id"], "node-host")
         self.assertEqual(classify_method("node.invoke")["parameter_hint"]["verified_closed_loop"]["uid"], "6875021188")
+        self.assertIn("system.run", classify_method("node.invoke")["parameter_hint"]["verified_closed_loop"]["commands"])
+        self.assertEqual(
+            classify_method("node.invoke")["parameter_hint"]["verified_closed_loop"]["commands"]["system.run"]["result_shape"]["payload"]["stdout"],
+            "mimo2api-system-run-ok\n",
+        )
+        self.assertEqual(
+            classify_method("node.invoke")["parameter_hint"]["verified_closed_loop"]["commands"]["browser.proxy"]["params"]["path"],
+            "/profiles",
+        )
         self.assertEqual(classify_method("sessions.compact")["parameter_hint"]["required"], ["key"])
         self.assertEqual(classify_event("agent")["hint"]["streams"]["assistant"].startswith("模型文本流"), True)
         self.assertIn("request", classify_event("exec.approval.requested")["hint"]["payload_fields"])

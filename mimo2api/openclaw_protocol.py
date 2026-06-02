@@ -584,14 +584,30 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "node.invoke": {
         "required": ["nodeId", "command", "idempotencyKey"],
-        "meaning": "调用已连接 node 执行命令；参数是 nodeId/command/idempotencyKey，可带 params。真实闭环已用远端 sandbox 内官方 openclaw node run 验证：device.pair 授权 node role 后，node.list 出现 connected node，node.invoke(system.which) 触发 node.invoke.request/result 并返回 /usr/bin/sh。",
+        "meaning": "调用已连接 node 执行命令；参数是 nodeId/command/idempotencyKey，可带 params。真实闭环已用远端 sandbox 内官方 openclaw node run 验证：device.pair 授权 node role 后，node.list 出现 connected node，node.invoke(system.which/system.run.prepare/system.run/browser.proxy) 均可触发 node.invoke.request/result 并返回结构化结果。",
         "known_good": {"nodeId": "node-id", "command": "system.which", "params": {"bins": ["sh"]}, "idempotencyKey": "uuid"},
         "verified_closed_loop": {
             "uid": "6875021188",
-            "command": "system.which",
-            "params": {"bins": ["sh"]},
-            "result_shape": {"ok": True, "payload": {"bins": {"sh": "/usr/bin/sh"}}, "payloadJSON": "json string"},
             "node_id_source": "device.id from paired device identity",
+            "commands": {
+                "system.which": {
+                    "params": {"bins": ["sh"]},
+                    "result_shape": {"ok": True, "payload": {"bins": {"sh": "/usr/bin/sh"}}, "payloadJSON": "json string"},
+                },
+                "system.run.prepare": {
+                    "params": {"command": ["/usr/bin/printf", "mimo2api-system-run-ok\\n"], "timeoutMs": 5000, "sessionKey": DEFAULT_SESSION_KEY},
+                    "result_shape": {"ok": True, "payload": {"plan": {"argv": "command argv array", "commandText": "formatted command", "sessionKey": DEFAULT_SESSION_KEY}}},
+                },
+                "system.run": {
+                    "approval_flow": "direct run returns SYSTEM_RUN_DENIED until exec.approval.request(twoPhase) is resolved with allow-once; approved invoke returns exitCode/stdout/stderr.",
+                    "params": {"command": ["/usr/bin/printf", "mimo2api-system-run-ok\\n"], "rawCommand": "/usr/bin/printf mimo2api-system-run-ok\\n", "runId": "approval id", "approved": True, "approvalDecision": "allow-once"},
+                    "result_shape": {"ok": True, "payload": {"exitCode": 0, "success": True, "stdout": "mimo2api-system-run-ok\n", "stderr": "", "error": None}},
+                },
+                "browser.proxy": {
+                    "params": {"method": "GET", "path": "/profiles", "timeoutMs": 3000},
+                    "result_shape": {"ok": True, "payload": {"result": {"profiles": "browser profile list with name/cdpPort/cdpUrl/running/tabCount/isDefault"}}},
+                },
+            },
         },
         "official_node_client": {
             "command": "openclaw node run",
@@ -600,7 +616,7 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
             "role": "node",
             "scopes": [],
             "caps": ["system"],
-            "commands": ["system.run.prepare", "system.run", "system.which"],
+            "commands": ["browser.proxy", "system.run.prepare", "system.run", "system.which"],
             "protocol": 3,
         },
         "state_note": "本次闭环选择 uid=6875021188；为保留可复现能力，该 uid 的 paired device 已追加 node role/token，后台 node 进程已停止。",
@@ -688,8 +704,8 @@ EVENT_HINTS: dict[str, dict[str, Any]] = {
     "node.pair.requested": {"meaning": "node.pair.request 创建 pending 请求后的配对事件。"},
     "node.pair.resolved": {"meaning": "node 配对请求 approve/reject 后的解析事件。"},
     "node.invoke.request": {
-        "meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列；真实闭环需 node role 连接，当前仍未验证。",
-        "blocked_by": "node role connect device signature validation",
+        "meaning": "node 调用请求事件；对应 node.invoke/node.invoke.result 系列；已通过 uid=6875021188 的官方 node host 完成 system.which、system.run.prepare/system.run、browser.proxy 闭环。",
+        "verified_by": "data/stateful_backups5/openclaw_6875021188_node_loop.json, data/stateful_backups5/openclaw_node_system_run_probe.json, data/stateful_backups5/openclaw_node_browser_proxy_probe.json",
     },
     "exec.approval.requested": {
         "meaning": "审批请求已创建。",
@@ -869,6 +885,6 @@ def build_protocol_catalog(features: dict[str, Any] | None = None) -> dict[str, 
             "events.agent/tool 子流完整字段仍需在真实工具调用中继续采样。",
             "chat.abort 是否可中止 agent run 仍需低影响验证。",
             "browser.request 已确认管理路径与 snapshot，但页面级动作应通过 tabs.wsUrl 的 CDP 通道继续验证。",
-            "node.invoke.* 已完成 system.which 闭环；system.run、browser.proxy 等更高影响 node command 仍需单独按最小副作用策略验证。",
+            "node.invoke.* 已完成 system.which、system.run.prepare/system.run、browser.proxy 闭环；后续仅剩更复杂的页面级 browser.proxy 动作按需验证。",
         ],
     }
