@@ -439,3 +439,14 @@ update.available
 - `node`：`node.pair.request/approve/reject/verify` schema 已确认；`node.pair.verify` 必填是 `nodeId + token`。官方 node client 入口为 `openclaw node run`，连接形态已收敛到 `client.id=cli/client.mode=node/role=node/caps=["system"]` 与 Ed25519 设备签名，但真实连接仍被 `DEVICE_AUTH_SIGNATURE_INVALID` 阻断。
 
 当前结论：browser 与 cron 的主要阻断点已解除；`node.invoke.*` 真实闭环仍是唯一核心缺口，不建议 push 到远端前宣称完整协议闭环已完成。
+
+## 继续推进补充：official node run 抵达 pairing required
+
+本轮继续推进 `node.invoke.*` 缺口，新增关键证据：
+
+- 官方源码与实测修正 node host 形态：`openclaw node run` 使用 `client.id=node-host`、`client.mode=node`、`role=node`、`scopes=[]`，声明 `system.run.prepare/system.run/system.which` 等 commands。
+- 本地自定义客户端经云端 `ws/proxy?ticket=...` 即使按 Ed25519/v3 payload 签名，仍停在 `DEVICE_AUTH_SIGNATURE_INVALID`。
+- 远端 sandbox 内直接运行官方 `openclaw node run` 已越过签名校验，返回 `pairing required`，并产生 `device.pair` pending；该 pending 已用 `device.pair.reject` 恢复清理。
+- 真实 pairing 顺序变得更清晰：先 `device.pair` 授权 node role，再可能进入 `node.pair`，最后才能验证 `node.invoke.request/result`。
+
+暂不继续批准 pairing 的原因：当前 live server 仍不支持 `node.pair.remove`，批准 node pairing 后可能留下无法通过 RPC 清理的 paired node 状态。下一步若要强行完成闭环，应先选择非关键 uid 并接受一个临时 paired node 残留，或先找到 live 版本的清理路径。

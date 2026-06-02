@@ -892,3 +892,70 @@ node.pair.verify => verify only
 ```
 
 因此后续 node 闭环验证必须控制创建数量，并优先找到官方 paired-store 清理路径或复用既有 paired node，避免继续污染持久配对状态。
+
+## 19. 继续推进补充（official node run 与 pairing required）
+
+### 19.1 官方 node 客户端真实 client 形态修正
+
+通过 npm 官方包 `openclaw@2026.3.12` 与远端 sandbox 内 `openclaw node run` 实测，修正 node host 连接形态：
+
+```text
+command: openclaw node run
+protocol: 3
+client.id: node-host
+client.mode: node
+client.instanceId: <node config nodeId>
+role: node
+scopes: []
+caps: ["system"]
+commands: system.run.prepare, system.run, system.which
+```
+
+这修正了前一轮“client.id=cli”的不完整结论：`cli` 是 operator/普通 CLI 客户端名，官方 node host 使用 `node-host`。
+
+### 19.2 自定义云端 ws/proxy node 连接与官方本地 node run 的差异
+
+本轮对比两条路径：
+
+1. 本地自定义 node role 客户端连接 `wss://.../ws/proxy?ticket=...`：
+   - 即使使用 Ed25519、raw publicKey base64url、v3/v2 payload、`client.id=node-host`，仍返回 `DEVICE_AUTH_SIGNATURE_INVALID`。
+2. 远端 sandbox 内执行官方命令：
+   - `timeout 12s openclaw node run --node-id deep-official-live-probe --display-name deep-official-live-probe`
+   - 返回 `pairing required`，说明官方客户端已通过 signature/nonce 校验，阻断点推进到了 pairing 层。
+
+结论：node role 真实闭环应优先走远端 sandbox 内官方 `openclaw node run`/local gateway 路径，而不是本地构造客户端经云端 `ws/proxy` 直接连入。
+
+### 19.3 Pairing 分层：先 device.pair，再 node.pair
+
+官方 node run 首次连接后，`device.pair.list` 出现 pending：
+
+```text
+displayName=deep-official-live-probe
+clientId=node-host
+clientMode=node
+role=node
+scopes=[]
+isRepair=true
+```
+
+这说明真实 node host 首先触发的是 **device pairing**（给同一 device/publicKey 增加 node role 权限），不是直接进入 `node.pair`。
+
+本轮没有批准该 pending，而是用：
+
+```text
+device.pair.reject {requestId}
+```
+
+完成恢复，最终 `device.pair.list.pending=[]`，paired device 仍保持原 operator 角色，未追加 node role。
+
+### 19.4 为什么还不继续批准到 node.invoke 闭环
+
+批准 `device.pair.approve` 后很可能继续进入 `node.pair` 阶段；但当前 live server `2026.3.12` 暴露方法中仍没有 `node.pair.remove`，已验证调用会返回：
+
+```text
+unknown method: node.pair.remove
+```
+
+虽然 npm 新版 `openclaw@2026.5.28` 源码已经包含 `node.pair.remove`，当前 live sandbox 版本尚不支持。因此继续批准 node pairing 可能留下无法通过 RPC 清理的 paired node 状态。
+
+结论：如果要完成 `node.invoke -> node.invoke.request -> node.invoke.result` 闭环，推荐下一步先获得明确授权：允许在一个非关键 uid 上留下一个临时 paired node，或先找到 live `2026.3.12` 的 paired-node 恢复/清理路径。
