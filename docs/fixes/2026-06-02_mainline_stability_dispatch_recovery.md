@@ -108,3 +108,34 @@ python3 -m unittest discover -s tests -v
 - `ResponsesStreamingCompatibilityTests.test_response_input_image_url_object_is_normalized`
 
 当前测试数：26。
+
+## Follow-up Batch: User File Recovery + Diagnostics Config Summary
+
+### Outcome
+
+- 新增 `mimo2api/user_store.py`，集中处理用户文件：
+  - `is_valid_user_id`
+  - `normalize_user_record`
+  - `load_user_records`
+  - `build_user_file_path`
+- WebUI `/api/users/list` 改为使用共享 loader，坏 JSON / 缺字段 / 非法 userId 不再静默吞掉，响应新增：
+  - `invalid_count`
+  - `invalid_users`
+- Manager `load_all_users()` 改为复用共享 loader，并在启动时记录被跳过的非法用户文件数量。
+- `/api/diagnostics/routes` 新增 `config` 摘要：
+  - auth 开关
+  - model mapping path
+  - process lock path
+  - preferred uid 是否配置
+  - legacy fallback 开关
+  - pending queue / node timeout 关键参数
+
+### Verification
+
+新增回归测试：
+
+- `UserStoreTests.test_load_user_records_reports_invalid_files`
+- `UserStoreTests.test_api_users_list_returns_invalid_count`
+- `RouteDiagnosticsConfigTests.test_route_diagnostics_includes_config_summary`
+
+当前测试数：29。

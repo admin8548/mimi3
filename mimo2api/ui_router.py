@@ -18,16 +18,11 @@ from .auth import (
     webui_cookie_secure,
 )
 from .gateway_state import state
+from .user_store import USERS_DIR, build_user_file_path, is_valid_user_id, load_user_records
 
 router = APIRouter()
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-USERS_DIR = os.path.join(ROOT_DIR, "users")
-USER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
-
-
-def is_valid_user_id(uid: str | None) -> bool:
-    return isinstance(uid, str) and bool(USER_ID_RE.fullmatch(uid.strip()))
 
 
 @router.get("/")
@@ -123,15 +118,7 @@ async def fetch_user_status(data: dict) -> dict:
 
 @router.get("/api/users/list")
 async def api_users_list():
-    raw_users = []
-    if os.path.exists(USERS_DIR):
-        for fn in os.listdir(USERS_DIR):
-            if fn.startswith("user_") and fn.endswith(".json"):
-                try:
-                    with open(os.path.join(USERS_DIR, fn), "r", encoding="utf-8") as f:
-                        raw_users.append(json.load(f))
-                except:
-                    pass
+    raw_users, invalid_users = load_user_records(USERS_DIR)
 
     # 并发查询所有用户的实例状态
     tasks = [fetch_user_status(rd) for rd in raw_users]
@@ -146,7 +133,7 @@ async def api_users_list():
             "claw_status": data.get("claw_status", "UNKNOWN"),
             "remain_sec": data.get("remain_sec", 0)
         })
-    return JSONResponse({"users": users})
+    return JSONResponse({"users": users, "invalid_count": len(invalid_users), "invalid_users": invalid_users})
 
 @router.post("/api/users/add")
 async def api_users_add(request: Request):
@@ -169,7 +156,7 @@ async def api_users_add(request: Request):
             return JSONResponse({"detail": "userId 只能包含字母、数字、下划线、点和短横线，长度 1-128"}, status_code=400)
             
         os.makedirs(USERS_DIR, exist_ok=True)
-        target_file = os.path.join(USERS_DIR, f"user_{uid}.json")
+        target_file = build_user_file_path(uid, USERS_DIR)
         
         user_data = {
             "userId": uid,
@@ -189,8 +176,8 @@ async def api_users_delete(uid: str):
     uid = uid.strip()
     if not is_valid_user_id(uid):
         return JSONResponse({"detail": "非法 userId"}, status_code=400)
-    target_file = os.path.join(USERS_DIR, f"user_{uid}.json")
-    if os.path.exists(target_file):
-        os.remove(target_file)
+    target_file = build_user_file_path(uid, USERS_DIR)
+    if target_file.exists():
+        target_file.unlink()
         return JSONResponse({"status": "ok"})
     return JSONResponse({"detail": "User not found"}, status_code=404)

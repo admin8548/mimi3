@@ -265,6 +265,16 @@ def build_route_diagnostics() -> dict[str, Any]:
         present[path] = sorted(set(present[path]) | set(methods))
     return {
         "generated_at": int(time.time()),
+        "config": {
+            "ai_auth_enabled": is_ai_auth_enabled(),
+            "web_auth_enabled": is_web_auth_enabled(),
+            "model_mapping_path": str(MODEL_MAPPING_FILE),
+            "process_lock_path": PROCESS_LOCK_PATH,
+            "preferred_uid_configured": bool(PREFERRED_UID),
+            "allow_legacy_ws_fallback": ALLOW_LEGACY_WS_FALLBACK,
+            "max_pending_queues": MAX_PENDING_QUEUES,
+            "node_response_timeout_seconds": NODE_RESPONSE_TIMEOUT,
+        },
         "key_routes": {
             path: {"present": path in present, "methods": present.get(path, [])}
             for path in sorted(KEY_DIAGNOSTIC_ROUTES)

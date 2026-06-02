@@ -514,3 +514,71 @@ class ResponsesStreamingCompatibilityTests(unittest.TestCase):
         })
         content = converted["messages"][0]["content"]
         self.assertEqual(content[0]["image_url"]["url"], "data:image/png;base64,abc")
+
+
+class UserStoreTests(unittest.TestCase):
+    def test_load_user_records_reports_invalid_files(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from mimo2api.user_store import load_user_records
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "user_good.json").write_text(json.dumps({
+                "userId": "u1",
+                "serviceToken": "st",
+                "xiaomichatbot_ph": "ph",
+            }), "utf-8")
+            (root / "user_bad_json.json").write_text("{bad", "utf-8")
+            (root / "user_missing.json").write_text(json.dumps({"userId": "u2"}), "utf-8")
+            (root / "ignore.json").write_text("{}", "utf-8")
+
+            users, invalid = load_user_records(td)
+            self.assertEqual([u["userId"] for u in users], ["u1"])
+            self.assertEqual(len(invalid), 2)
+            self.assertEqual({item["file"] for item in invalid}, {"user_bad_json.json", "user_missing.json"})
+
+    def test_api_users_list_returns_invalid_count(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        import mimo2api.ui_router as ui_router
+
+        old_users_dir = ui_router.USERS_DIR
+        old_fetch_user_status = ui_router.fetch_user_status
+
+        async def fake_fetch_user_status(data):
+            return {**data, "claw_status": "AVAILABLE", "remain_sec": 123}
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "user_good.json").write_text(json.dumps({
+                "userId": "u1",
+                "serviceToken": "st",
+                "xiaomichatbot_ph": "ph",
+                "name": "User One",
+            }), "utf-8")
+            (root / "user_bad.json").write_text(json.dumps({"userId": "../bad"}), "utf-8")
+            try:
+                ui_router.USERS_DIR = td
+                ui_router.fetch_user_status = fake_fetch_user_status
+                resp = TestClient(app).get("/api/users/list")
+                self.assertEqual(resp.status_code, 200)
+                payload = resp.json()
+                self.assertEqual(len(payload["users"]), 1)
+                self.assertEqual(payload["users"][0]["userId"], "u1")
+                self.assertEqual(payload["invalid_count"], 1)
+                self.assertEqual(payload["invalid_users"][0]["file"], "user_bad.json")
+            finally:
+                ui_router.USERS_DIR = old_users_dir
+                ui_router.fetch_user_status = old_fetch_user_status
+
+
+class RouteDiagnosticsConfigTests(unittest.TestCase):
+    def test_route_diagnostics_includes_config_summary(self):
+        diagnostics = build_route_diagnostics()
+        self.assertIn("config", diagnostics)
+        self.assertIn("model_mapping_path", diagnostics["config"])
+        self.assertIn("allow_legacy_ws_fallback", diagnostics["config"])
+        self.assertIn("max_pending_queues", diagnostics["config"])

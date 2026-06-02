@@ -25,10 +25,12 @@ try:
     from .config import get_env_bool, get_env_int
     from .gateway_state import state
     from .openclaw_protocol import build_connect_params, summarize_hello_payload, summarize_openclaw_event
+    from .user_store import USERS_DIR, load_user_records
 except ImportError:  # pragma: no cover - direct script execution fallback
     from config import get_env_bool, get_env_int
     from gateway_state import state
     from openclaw_protocol import build_connect_params, summarize_hello_payload, summarize_openclaw_event
+    from user_store import USERS_DIR, load_user_records
 
 # 手动重建信号
 rebuild_event = asyncio.Event()
@@ -154,20 +156,10 @@ async def wait_for_gateway_uid_bridge(uid: str, *, since_ts: float, timeout: int
 # ----------------- 用户加载逻辑 (遵循 web_core.py 原版逻辑) -----------------
 def load_all_users() -> dict:
     """从 users/ 目录读取所有用户的登录凭证"""
-    users = {}
-    ud = os.path.join(ROOT_DIR, "users")
-    if os.path.exists(ud):
-        for fn in os.listdir(ud):
-            if fn.startswith("user_") and fn.endswith(".json"):
-                try:
-                    with open(os.path.join(ud, fn), "r", encoding="utf-8") as f:
-                        udata = json.load(f)
-                        uid = udata.get("userId")
-                        if uid:
-                            users[str(uid).strip()] = udata
-                except Exception:
-                    continue
-    return users
+    records, invalid_records = load_user_records(USERS_DIR)
+    if invalid_records:
+        logger.warning(f"users/ 中跳过 {len(invalid_records)} 个非法用户文件: {invalid_records[:5]}")
+    return {str(record["userId"]): record for record in records}
 
 
 async def get_bridge_code(user_id: str = "") -> str:
