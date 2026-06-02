@@ -882,9 +882,9 @@ def build_protocol_catalog(features: dict[str, Any] | None = None) -> dict[str, 
         "parameter_hints": PARAMETER_HINTS,
         "event_hints": EVENT_HINTS,
         "known_gaps": [
-            "events.agent/tool 子流完整字段仍需在真实工具调用中继续采样。",
-            "chat.abort 是否可中止 agent run 仍需低影响验证。",
-            "browser.request 已确认管理路径与 snapshot，但页面级动作应通过 tabs.wsUrl 的 CDP 通道继续验证。",
-            "node.invoke.* 已完成 system.which、system.run.prepare/system.run、browser.proxy 闭环；后续仅剩更复杂的页面级 browser.proxy 动作按需验证。",
+            "非阻塞后续补充：events.agent/tool 子流完整字段可在更多真实工具调用中继续采样。",
+            "非阻塞后续补充：chat.abort 对活跃 agent run 的中止效果可在需要取消能力时再做低影响验证。",
+            "非阻塞后续补充：browser.request 已确认管理路径与 snapshot；tabs.wsUrl/CDP 页面级动作仅在需要浏览器自动化能力时继续验证。",
+            "非阻塞后续补充：node.invoke.* 已完成 system.which、system.run.prepare/system.run、browser.proxy 闭环；更复杂的 browser.proxy 页面动作按需验证。",
         ],
     }

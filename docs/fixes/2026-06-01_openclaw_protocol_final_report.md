@@ -486,3 +486,31 @@ update.available
 - 验证后已停止 node host，`node.list` 恢复为 `paired=true/connected=false`。
 
 结论：官方 node host 当前公开的 `system.which`、`system.run.prepare`、`system.run`、`browser.proxy` 均已完成闭环验证。剩余研究方向不再是 node command 是否可用，而是更高副作用的 browser 页面级动作路径是否值得继续单独验证。
+
+## 收尾决策：剩余研究项转为非阻塞 deferred backlog
+
+当前 OpenClaw 协议研究的核心闭环已经完成，尤其是此前最大缺口 `node.invoke.*` 已覆盖：
+
+- `system.which`
+- `system.run.prepare`
+- `system.run`
+- `browser.proxy` 的只读 `/profiles` 路径
+
+因此剩余项目不再作为当前必须完成任务处理，统一转为后续按需补充：
+
+1. `events.agent/tool` 完整字段采样  
+   已有安全摘要和 schema 轮廓；更多字段只在需要更细诊断时继续采样。
+
+2. `chat.abort` 活跃 run 中止验证  
+   仅在后续需要用户主动取消/超时取消能力时继续做低影响验证。
+
+3. browser CDP 页面级动作  
+   `browser.request` 管理路径与 snapshot 已确认；`tabs.wsUrl` 直连 CDP 只有在需要完整 browser automation 时继续。
+
+4. `browser.proxy` 页面级动作  
+   `GET /profiles` 已证明 command 与 node proxy 通道可用；`/navigate`、`/snapshot`、`/screenshot`、`/act` 等可能产生浏览器状态变化，后续按明确需求单独验证。
+
+5. `allow-always` 持久批准  
+   `allow-once` 已证明审批闭环；`allow-always` 可能留下持久状态，当前不建议实测。
+
+结论：当前研究阶段可以收束。后续优先回到 mimo2api 主线稳定性、API 兼容、调度、错误恢复、部署与监控，而不是继续扩大 OpenClaw 协议深挖范围。

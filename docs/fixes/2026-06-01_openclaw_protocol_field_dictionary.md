@@ -1357,3 +1357,17 @@ data/stateful_backups5/openclaw_node_browser_proxy_probe.json
 - `browser.proxy`
 
 后续若继续深入，应聚焦 `browser.proxy` 的页面级动作路径，例如 `/snapshot`、`/navigate`、`/screenshot`，但这些会引入浏览器状态变化，应另行制定更严格的最小副作用与清理策略。
+
+## 23. 收尾决策：未完成项标记为后续按需补充
+
+当前字段字典中历史章节曾标记若干缺口；截至本轮验证后，核心缺口 `node.invoke.*` 已完成，剩余项目均为非阻塞后续补充：
+
+| 项目 | 当前状态 | 是否必须 | 建议 |
+|---|---|---:|---|
+| `events.agent/tool` 完整字段 | 已有摘要，更多真实工具字段未穷尽 | 否 | 需要更细诊断时再采样 |
+| `chat.abort` 活跃 run 中止 | 无活跃 run 场景已知，活跃 run 未测 | 否 | 需要取消能力时再测 |
+| `browser.request` + `tabs.wsUrl` CDP | 管理路径/snapshot 已确认，CDP 未深入 | 否 | 需要 browser automation 时再测 |
+| `browser.proxy` 页面动作 | `/profiles` 已闭环，页面动作未测 | 否 | 导航/截图/act 有状态副作用，按需单独测 |
+| `exec.approval.resolve allow-always` | 源码确认枚举，未实测持久批准 | 否 | 当前跳过，避免持久残留 |
+
+后续如重新打开这些项目，应继续遵循：最小副作用、单变量验证、先记录清理路径、完成后更新本字段字典与测试。
