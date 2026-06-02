@@ -327,10 +327,19 @@ def diagnose_request(body_text: str) -> str:
     )
 
 
-def record_error(route: str, status_code: int, reason: str, model: str = "", detail: str = "", request_body: str = ""):
+def record_error(
+    route: str,
+    status_code: int,
+    reason: str,
+    model: str = "",
+    detail: str = "",
+    request_body: str = "",
+    category: str = "gateway",
+):
     """记录错误到环形缓冲区，可通过 /api/errors 查询"""
     state.recent_errors.append({
         "ts": int(time.time()),
+        "category": str(category or "gateway")[:80],
         "route": route,
         "status": status_code,
         "reason": reason[:200],
@@ -599,11 +608,15 @@ async def api_status_history(hours: int = 24):
     return JSONResponse(content=await asyncio.to_thread(load_status_history, hours))
 
 @app.get("/api/errors")
-async def api_errors(limit: int = 50):
+async def api_errors(limit: int = 50, category: str | None = None):
     limit = max(1, min(limit, 200))
-    errors = list(state.recent_errors)[-limit:]
+    errors_source = list(state.recent_errors)
+    if category:
+        category = category.strip()
+        errors_source = [err for err in errors_source if err.get("category") == category]
+    errors = errors_source[-limit:]
     errors.reverse()  # 最新的在前
-    return JSONResponse(content={"count": len(errors), "errors": errors})
+    return JSONResponse(content={"count": len(errors), "category": category or "", "errors": errors})
 
 @app.get("/api/agent-runs")
 async def api_agent_runs(limit: int = 50):
@@ -963,7 +976,7 @@ async def prepare_forward_attempt(*, method: str, path: str, body: str, log_labe
         preview = "".join(body_preview_parts).replace("\n", "\\n")[:512]
         if preview:
             logger.warning(f"⚠️ {log_label} 节点 401 响应体摘要: {preview}")
-            record_error(path, 401, "节点到上游鉴权失败", detail=preview)
+            record_error(path, 401, "节点到上游鉴权失败", detail=preview, category="node_auth")
         if "Invalid API Key" in preview or "invalid_key" in preview:
             await retire_client(attempt.target_ws, "上游 Invalid API Key")
             retry_state.status_code = 401
@@ -1037,7 +1050,7 @@ async def collect_upstream_chat_response(
             raw_body = await collect_response_body(req_id, queue)
 
             if status_code >= 400:
-                record_error(route_key, status_code, f"上游返回 {status_code}", detail=raw_body[:500])
+                record_error(route_key, status_code, f"上游返回 {status_code}", detail=raw_body[:500], category="upstream")
                 record_request_finished(
                     route_key=route_key,
                     status_code=status_code,
@@ -1054,7 +1067,7 @@ async def collect_upstream_chat_response(
                 raise RuntimeError(raw_body or f"上游返回 {status_code}")
 
             if not raw_body.strip():
-                record_error(route_key, 502, "上游返回空响应", detail="")
+                record_error(route_key, 502, "上游返回空响应", detail="", category="upstream")
                 record_request_finished(
                     route_key=route_key,
                     status_code=502,
@@ -1067,7 +1080,7 @@ async def collect_upstream_chat_response(
             try:
                 chat_resp = json.loads(raw_body)
             except json.JSONDecodeError:
-                record_error(route_key, 502, "上游返回了非法 JSON", detail=raw_body[:500])
+                record_error(route_key, 502, "上游返回了非法 JSON", detail=raw_body[:500], category="upstream")
                 record_request_finished(
                     route_key=route_key,
                     status_code=502,
@@ -1110,7 +1123,7 @@ async def handle_compaction_request(req_body: dict[str, Any], *, route_key: str,
     try:
         chat_req = _build_compaction_chat_request(req_body)
     except Exception as exc:
-        record_error(route_key, 400, f"compact 请求转换失败: {exc}")
+        record_error(route_key, 400, f"compact 请求转换失败: {exc}", category="conversion")
         record_request_finished(route_key=route_key, status_code=400, started_at=request_started_at, first_byte_at=None, success=False)
         return _json_error(f"compact 请求转换失败: {exc}", 400, "invalid_request_error")
 
@@ -1249,7 +1262,7 @@ async def audio_speech_handler(payload: AudioSpeechRequest):
             status_code = first_msg.get("status", 200)
             
             if status_code >= 400:
-                record_error(route_key, status_code, f"上游返回 {status_code}", detail=raw_body[:500])
+                record_error(route_key, status_code, f"上游返回 {status_code}", detail=raw_body[:500], category="upstream")
                 content_type, response_headers = normalize_response_headers(first_msg.get("headers", {}))
                 record_request_finished(route_key=route_key, status_code=status_code, started_at=request_started_at, first_byte_at=first_byte_at, success=False)
 
@@ -1313,7 +1326,7 @@ async def responses_handler(request: Request):
     try:
         req_body = json.loads(body.decode("utf-8", "ignore").lstrip("\ufeff"))
     except Exception as exc:
-        record_error("/v1/responses", 400, f"请求解析失败: {exc}")
+        record_error("/v1/responses", 400, f"请求解析失败: {exc}", category="request_validation")
         return _json_error(f"请求解析失败: {exc}", 400, "invalid_request_error")
 
     if _is_compaction_trigger_request(req_body):
@@ -1330,7 +1343,7 @@ async def responses_handler(request: Request):
     try:
         chat_req = responses_convert_request(req_body)
     except Exception as exc:
-        record_error("/v1/responses", 400, f"请求解析/转换失败: {exc}")
+        record_error("/v1/responses", 400, f"请求解析/转换失败: {exc}", category="conversion")
         return _json_error(f"请求解析失败: {exc}", 400, "invalid_request_error")
 
     model = chat_req.get("model", "")
@@ -1365,7 +1378,7 @@ async def responses_handler(request: Request):
             if status_code >= 400:
                 content_type, response_headers = normalize_response_headers(first_msg.get("headers", {}))
                 raw_body = await collect_response_body(req_id, queue)
-                record_error("/v1/responses", status_code, f"上游返回 {status_code}", detail=raw_body[:500])
+                record_error("/v1/responses", status_code, f"上游返回 {status_code}", detail=raw_body[:500], category="upstream")
                 record_request_finished(route_key=route_key, status_code=status_code, started_at=request_started_at, first_byte_at=first_byte_at, success=False)
 
                 try:
@@ -1444,13 +1457,13 @@ async def responses_handler(request: Request):
             else:
                 raw_body = await collect_response_body(req_id, queue)
                 if not raw_body.strip():
-                    record_error(route_key, 502, "上游返回空响应", detail="")
+                    record_error(route_key, 502, "上游返回空响应", detail="", category="upstream")
                     record_request_finished(route_key=route_key, status_code=502, started_at=request_started_at, first_byte_at=first_byte_at, success=False)
                     return JSONResponse({"error": {"message": "上游返回空响应", "type": "upstream_error", "code": 502}}, status_code=502)
                 try:
                     chat_resp = json.loads(raw_body)
                 except json.JSONDecodeError:
-                    record_error(route_key, 502, "上游返回了非法 JSON", detail=raw_body[:500])
+                    record_error(route_key, 502, "上游返回了非法 JSON", detail=raw_body[:500], category="upstream")
                     record_request_finished(route_key=route_key, status_code=502, started_at=request_started_at, first_byte_at=first_byte_at, success=False)
                     return JSONResponse({"error": {"message": "上游返回了非法 JSON", "type": "upstream_error", "code": 502}}, status_code=502)
 
@@ -1479,7 +1492,7 @@ async def responses_compact_handler(request: Request):
     try:
         req_body = json.loads(body.decode("utf-8", "ignore").lstrip("\ufeff"))
     except Exception as exc:
-        record_error("/v1/responses/compact", 400, f"请求解析失败: {exc}")
+        record_error("/v1/responses/compact", 400, f"请求解析失败: {exc}", category="request_validation")
         return _json_error(f"请求解析失败: {exc}", 400, "invalid_request_error")
     # The compact sub-endpoint is non-streaming and must return:
     # {"output":[{"type":"compaction","encrypted_content":"..."}]}
@@ -1601,7 +1614,7 @@ async def _forward_request(request: Request, path: str):
                                 break
                             elif msg.get("type") == "error":
                                 error_text = str(msg.get("body") or "节点返回错误")
-                                record_error(route_key, 502, "节点流式转发中途返回错误", detail=error_text[:500])
+                                record_error(route_key, 502, "节点流式转发中途返回错误", detail=error_text[:500], category="node_stream")
                                 yield _format_stream_error(error_text)
                                 break
                             elif msg.get("type") == "chunk":
@@ -1628,7 +1641,7 @@ async def _forward_request(request: Request, path: str):
                     record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded and status_code < 400, usage=usage_data)
 
             if status_code >= 400:
-                record_error(route_key, status_code, f"上游返回 {status_code}", detail=first_msg.get("body", "")[:300])
+                record_error(route_key, status_code, f"上游返回 {status_code}", detail=first_msg.get("body", "")[:300], category="upstream")
 
             return StreamingResponse(stream_generator(req_id, queue, use_keepalive=is_streaming), status_code=status_code, media_type=content_type, headers=response_headers)
 

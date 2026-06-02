@@ -582,3 +582,57 @@ class RouteDiagnosticsConfigTests(unittest.TestCase):
         self.assertIn("model_mapping_path", diagnostics["config"])
         self.assertIn("allow_legacy_ws_fallback", diagnostics["config"])
         self.assertIn("max_pending_queues", diagnostics["config"])
+
+
+class ErrorDiagnosticsTests(unittest.TestCase):
+    def test_api_errors_can_filter_by_category(self):
+        from mimo2api.gateway_state import state
+        from mimo2api.web_service import record_error
+
+        old_errors = list(state.recent_errors)
+        try:
+            state.recent_errors.clear()
+            record_error("/v1/test", 502, "upstream bad", category="upstream")
+            record_error("/v1/test", 400, "request bad", category="request_validation")
+
+            resp = TestClient(app).get("/api/errors?category=upstream")
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.json()
+            self.assertEqual(payload["category"], "upstream")
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["errors"][0]["category"], "upstream")
+        finally:
+            state.recent_errors.clear()
+            state.recent_errors.extend(old_errors)
+
+
+class ResponsesBoundaryCompatibilityTests(unittest.TestCase):
+    def test_function_call_output_history_is_stringified_as_tool_message(self):
+        from mimo2api.responses_converter import convert_request
+
+        converted = convert_request({
+            "model": "mimo-v2.5",
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": {"q": "x"}},
+                {"type": "function_call_output", "call_id": "call_1", "output": {"result": 7}},
+            ],
+        })
+        self.assertEqual(converted["messages"][0]["role"], "assistant")
+        self.assertEqual(converted["messages"][0]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(converted["messages"][0]["tool_calls"][0]["function"]["arguments"], '{"q": "x"}')
+        self.assertEqual(converted["messages"][1]["role"], "tool")
+        self.assertEqual(converted["messages"][1]["tool_call_id"], "call_1")
+        self.assertEqual(converted["messages"][1]["content"], '{"result": 7}')
+
+    def test_tool_choice_and_max_output_tokens_are_mapped(self):
+        from mimo2api.responses_converter import convert_request
+
+        converted = convert_request({
+            "model": "mimo-v2.5",
+            "input": "hi",
+            "max_output_tokens": 123,
+            "tool_choice": {"type": "function", "name": "lookup"},
+            "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        })
+        self.assertEqual(converted["max_tokens"], 123)
+        self.assertEqual(converted["tool_choice"], {"type": "function", "function": {"name": "lookup"}})

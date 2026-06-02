@@ -139,3 +139,31 @@ python3 -m unittest discover -s tests -v
 - `RouteDiagnosticsConfigTests.test_route_diagnostics_includes_config_summary`
 
 当前测试数：29。
+
+## Follow-up Batch: Error Diagnostics Categories + Responses Boundaries
+
+### Outcome
+
+- `recent_errors` 新增 `category` 字段，默认 `gateway`。
+- `/api/errors` 支持按分类过滤：`/api/errors?category=upstream`。
+- 关键错误路径增加分类：
+  - `request_validation`
+  - `conversion`
+  - `upstream`
+  - `node_auth`
+  - `node_stream`
+- Responses 转换边界新增回归覆盖：
+  - `function_call_output` 会被稳定转换为 Chat `tool` message。
+  - 对象/字典型工具参数与工具输出会被 JSON stringified。
+  - `tool_choice: {type:function,name}` 会转换为 Chat-style `{type:function,function:{name}}`。
+  - `max_output_tokens` 会映射到 `max_tokens`。
+
+### Verification
+
+新增回归测试：
+
+- `ErrorDiagnosticsTests.test_api_errors_can_filter_by_category`
+- `ResponsesBoundaryCompatibilityTests.test_function_call_output_history_is_stringified_as_tool_message`
+- `ResponsesBoundaryCompatibilityTests.test_tool_choice_and_max_output_tokens_are_mapped`
+
+当前测试数：32。
