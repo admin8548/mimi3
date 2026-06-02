@@ -83,6 +83,23 @@ def _json_error(message: str, status_code: int, error_type: str = "server_error"
         status_code=status_code,
     )
 
+
+def _admin_error_compat(message: str, status_code: int, error_type: str = "invalid_request_error") -> JSONResponse:
+    """Management API error shape that preserves legacy `error` string clients."""
+    normalized = message if isinstance(message, str) and message else f"HTTP {status_code}"
+    return JSONResponse(
+        content={
+            "detail": normalized,
+            "error": normalized,
+            "error_object": {
+                "message": normalized,
+                "type": error_type,
+                "code": status_code,
+            },
+        },
+        status_code=status_code,
+    )
+
 manager_bg_task = None
 metrics_persist_task = None
 sweeper_bg_task = None
@@ -700,10 +717,10 @@ async def api_put_model_mapping(request: Request):
     try:
         new_mapping = json.loads(body.decode("utf-8", "ignore").lstrip("\ufeff"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return JSONResponse({"error": "请求体不是合法 JSON"}, status_code=400)
+        return _admin_error_compat("请求体不是合法 JSON", 400)
     normalized_mapping = normalize_model_mapping(new_mapping)
     if normalized_mapping is None:
-        return JSONResponse({"error": "映射必须是非空字符串到非空字符串的 JSON 对象"}, status_code=400)
+        return _admin_error_compat("映射必须是非空字符串到非空字符串的 JSON 对象", 400)
     save_model_mapping(normalized_mapping)
     return JSONResponse(content=normalized_mapping)
 
@@ -714,7 +731,7 @@ async def api_delete_model_mapping(model_name: str):
         del mapping[model_name]
         save_model_mapping(mapping)
         return JSONResponse({"ok": True, "deleted": model_name})
-    return JSONResponse({"error": f"模型 {model_name} 不在映射中"}, status_code=404)
+    return _admin_error_compat(f"模型 {model_name} 不在映射中", 404, "not_found")
 
 @app.websocket("/ws")
 async def ws_tunnel(ws: WebSocket):

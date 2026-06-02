@@ -191,3 +191,30 @@ python3 -m unittest discover -s tests -v
 - `AdminErrorCompatibilityTests.test_user_add_invalid_uid_keeps_detail_and_adds_error_object`
 
 当前测试数：34。
+
+## Follow-up Batch: Model Mapping Admin Errors + Startup Smoke
+
+### Outcome
+
+- `/api/model_mapping` 管理面错误响应保留旧 `error` 字符串，同时新增：
+  - `detail`
+  - `error_object.message`
+  - `error_object.type`
+  - `error_object.code`
+- 覆盖场景：
+  - PUT 非法 JSON
+  - PUT 非法 schema
+  - DELETE 不存在模型
+- 完成启动路径 smoke：
+  - `python3 -m py_compile main.py mimo2api/*.py`
+  - FastAPI route diagnostics import/smoke
+  - `docker compose config`
+
+### Verification
+
+新增回归测试：
+
+- `ModelMappingAdminErrorCompatibilityTests.test_model_mapping_errors_keep_legacy_error_and_add_error_object`
+- `ModelMappingAdminErrorCompatibilityTests.test_model_mapping_delete_not_found_has_error_object`
+
+当前测试数：36。

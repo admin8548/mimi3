@@ -681,3 +681,21 @@ class AdminErrorCompatibilityTests(unittest.TestCase):
         self.assertIn("detail", payload)
         self.assertEqual(payload["error"]["code"], 400)
         self.assertEqual(payload["error"]["type"], "invalid_request_error")
+
+
+class ModelMappingAdminErrorCompatibilityTests(unittest.TestCase):
+    def test_model_mapping_errors_keep_legacy_error_and_add_error_object(self):
+        resp = TestClient(app).put("/api/model_mapping", content="{bad", headers={"content-type": "application/json"})
+        self.assertEqual(resp.status_code, 400)
+        payload = resp.json()
+        self.assertIsInstance(payload["error"], str)
+        self.assertEqual(payload["detail"], payload["error"])
+        self.assertEqual(payload["error_object"]["code"], 400)
+        self.assertEqual(payload["error_object"]["type"], "invalid_request_error")
+
+    def test_model_mapping_delete_not_found_has_error_object(self):
+        resp = TestClient(app).delete("/api/model_mapping/__definitely_missing_model__")
+        self.assertEqual(resp.status_code, 404)
+        payload = resp.json()
+        self.assertIsInstance(payload["error"], str)
+        self.assertEqual(payload["error_object"]["type"], "not_found")
