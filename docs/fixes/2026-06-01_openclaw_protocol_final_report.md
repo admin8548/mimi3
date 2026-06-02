@@ -419,3 +419,13 @@ update.available
 - `agents.files.set` 已对 `HEARTBEAT.md` 完成备份、写入 marker、读取确认、恢复、最终一致性确认。
 - `cron.run` 已真实触发 `cron` started/finished 事件；finished 包含 `summary/sessionId/sessionKey/usage` 等字段。因未配置 delivery channel，最终 `status=error`，但 agent turn 已产出 `CRON_PROBE_OK`。
 - 重要稳定性修复：`cron.run` 生成的 `agent:main:cron:...` session 会排在 `sessions.list` 首位，旧 manager 会误选它。已清理临时 cron session，并修复 session 选择逻辑为优先 `agent:main:main`。
+
+## 继续推进补充：approval allow-once / browser profiles-tabs / AGENTS-SOUL 限制
+
+本轮继续推进并新增确认：
+
+- 真实 approval id 上已发现批准枚举：`allow-once`。当前有效决策枚举为 `deny` 与 `allow-once`。
+- browser 管理路径新增确认：`GET /profiles` 与 `GET /tabs`。
+- `/profiles` 返回 profile/cdpPort/cdpUrl/running/tabCount 等；`/tabs` 返回 targetId/title/url/wsUrl/type。
+- 多个常见 CDP 路径仍为 Not Found，因此 `browser.request` 是 OpenClaw 管理 API，而不是裸 Chrome CDP HTTP API。
+- 用户说明 `AGENTS.md` / `SOUL.md` 可能不是真实最新文件，本轮已明确不写入这些核心文件；若后续需要验证 set，必须由用户提供最新内容并恢复到该版本。

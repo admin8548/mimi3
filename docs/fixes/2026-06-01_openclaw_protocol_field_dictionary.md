@@ -696,3 +696,89 @@ agent:main:cron:<jobId>:run:<sessionId>
 - 最后才 fallback。
 
 这避免后续 bridge 注入、chat.history 或关机指令落入 cron 临时上下文。
+
+## 17. 继续推进补充：approval allow-once 与 browser 管理路径
+
+### 17.1 Approval 批准枚举最终确认
+
+继续用真实 approval id 探测后，已确认：
+
+```text
+allow-once
+```
+
+是有效批准枚举。调用后：
+
+```json
+{"ok": true}
+```
+
+`exec.approval.request` 返回：
+
+```text
+decision = allow-once
+```
+
+同时已确认以下候选无效：
+
+```text
+allow, approve, approved, accept, yes,
+approveOnce, approve_once, allowOnce, allow_once, allow_once_for_command,
+allowAlways, allow_always, always, permit, grant, ok, allowlist, trusted,
+approve-once, approve-always, allow-always, approveOnceForCommand,
+allowAlwaysForCommand, trusted_command, trust_command, ALLOW, APPROVE, ACCEPT
+```
+
+当前有效决策枚举：
+
+```text
+deny
+allow-once
+```
+
+### 17.2 Browser 管理路径继续发现
+
+`browser.request` 除已知：
+
+```text
+GET /
+POST /start
+POST /stop
+```
+
+还确认：
+
+```text
+GET /profiles
+GET /tabs
+```
+
+`/profiles` 返回 profile 列表，字段包括：
+
+```text
+name, cdpPort, cdpUrl, color, running, tabCount, isDefault, isRemote, reconcileReason
+```
+
+`/tabs` 返回 tab/target 列表，字段包括：
+
+```text
+targetId, title, url, wsUrl, type
+```
+
+仍为 Not Found 的路径包括：
+
+```text
+/json/version, /json/list, /devtools/browser,
+/sessions, /pages, /targets, /status, /health,
+/cdp/json/version, /devtools/json/version
+```
+
+说明 OpenClaw 暴露的是自己的 browser 管理 API，不是裸 Chrome CDP HTTP API。
+
+### 17.3 AGENTS.md / SOUL.md 注意事项
+
+用户已说明当前 `AGENTS.md` / `SOUL.md` 可能是被当前提示词恢复到最初版本，不是真实现有实时文件。因此：
+
+- 当前仅允许读取/记录白名单与元信息；
+- 不写入 `AGENTS.md` / `SOUL.md`；
+- 若后续要验证这些核心文件的 `agents.files.set`，需要用户先提供真实最新内容，再按备份/写入/验证/恢复流程处理。

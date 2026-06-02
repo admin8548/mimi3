@@ -441,12 +441,12 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "agents.files.get": {
         "required": ["agentId", "name"],
-        "meaning": "读取指定 agent workspace 固定文件内容；参数是 name，不是 path；实测支持 AGENTS.md/HEARTBEAT.md 等。",
+        "meaning": "读取指定 agent workspace 固定文件内容；参数是 name，不是 path；实测支持 AGENTS.md/SOUL.md/TOOLS.md/IDENTITY.md/USER.md/HEARTBEAT.md 等；AGENTS.md/SOUL.md 当前内容可能是提示词恢复版，不应当作真实最新文件。",
         "known_good": {"agentId": DEFAULT_AGENT_ID, "name": "AGENTS.md"},
     },
     "agents.files.set": {
         "required": ["agentId", "name", "content"],
-        "meaning": "写入指定 agent workspace 固定文件；只允许受支持的 name，任意临时文件名会返回 unsupported file；HEARTBEAT.md 已验证可备份、写入、读取并恢复。",
+        "meaning": "写入指定 agent workspace 固定文件；只允许受支持的 name，任意临时文件名会返回 unsupported file；HEARTBEAT.md 已验证可备份、写入、读取并恢复；AGENTS.md/SOUL.md 未写入，需用户提供真实最新内容后才能安全验证。",
         "known_good": {"agentId": DEFAULT_AGENT_ID, "name": "HEARTBEAT.md", "content": "..."},
     },
     "exec.approvals.get": {
@@ -472,13 +472,15 @@ PARAMETER_HINTS: dict[str, dict[str, Any]] = {
     },
     "exec.approval.resolve": {
         "required": ["id", "decision"],
-        "meaning": "解析审批请求；实测 decision=deny 是有效拒绝枚举；allow/approve/approved/accept/yes/approveOnce/allowOnce/permit/grant/ok/trusted 等批准候选均 invalid，批准枚举仍未发现。",
+        "meaning": "解析审批请求；实测有效枚举包括 deny 与 allow-once；allow/approve/approved/accept/yes/approveOnce/allowOnce/permit/grant/ok/trusted 等其它候选均 invalid。",
         "known_good": {"id": "approval-id", "decision": "deny"},
+        "observed_decisions": ["deny", "allow-once"],
     },
     "browser.request": {
         "required": ["method", "path"],
-        "meaning": "向 OpenClaw browser 管理端发请求；GET / 返回 runtime 状态；POST /start 与 POST /stop 可启停 browser；CDP /json/* 路径未直接暴露。",
+        "meaning": "向 OpenClaw browser 管理端发请求；GET / 返回 runtime 状态；POST /start 与 POST /stop 可启停 browser；GET /profiles 返回 profile 状态；GET /tabs 返回 tab/target/wsUrl；CDP /json/* 路径未直接暴露。",
         "known_good": {"method": "GET", "path": "/"},
+        "observed_paths": ["/", "/start", "/stop", "/profiles", "/tabs"],
     },
     "config.patch": {
         "required": ["raw", "baseHash"],
