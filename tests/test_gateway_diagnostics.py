@@ -249,3 +249,72 @@ class OpenClawSessionSelectionTests(unittest.TestCase):
         from mimo2api.manager import choose_openclaw_session_key
 
         self.assertEqual(choose_openclaw_session_key([], fallback="agent:main:main"), "agent:main:main")
+
+
+class GatewayStabilityTests(unittest.TestCase):
+    def test_legacy_reject_logging_is_rate_limited(self):
+        from mimo2api import web_service
+
+        old_last = web_service._legacy_reject_last_log_at
+        old_suppressed = web_service._legacy_reject_suppressed
+        old_interval = web_service.LEGACY_REJECT_LOG_INTERVAL_SECONDS
+        try:
+            web_service._legacy_reject_last_log_at = 0.0
+            web_service._legacy_reject_suppressed = 0
+            web_service.LEGACY_REJECT_LOG_INTERVAL_SECONDS = 30
+
+            self.assertEqual(web_service.should_log_legacy_reject(now=100.0), (True, 0))
+            self.assertEqual(web_service.should_log_legacy_reject(now=101.0), (False, 0))
+            self.assertEqual(web_service.should_log_legacy_reject(now=102.0), (False, 0))
+            self.assertEqual(web_service.should_log_legacy_reject(now=131.0), (True, 2))
+        finally:
+            web_service._legacy_reject_last_log_at = old_last
+            web_service._legacy_reject_suppressed = old_suppressed
+            web_service.LEGACY_REJECT_LOG_INTERVAL_SECONDS = old_interval
+
+
+class ResponsesConverterStabilityTests(unittest.TestCase):
+    def test_sse_event_does_not_mutate_input_payload(self):
+        from mimo2api.responses_converter import _sse_event
+
+        payload = {"response": {"status": "in_progress"}}
+        event = _sse_event("response.created", payload)
+        self.assertIn("response.created", event)
+        self.assertNotIn("type", payload)
+
+
+class ConfigParsingTests(unittest.TestCase):
+    def test_invalid_numeric_env_falls_back_and_clamps(self):
+        import os
+        from mimo2api.config import get_env_float, get_env_int
+
+        old_int = os.environ.get("MIMO_TEST_INT")
+        old_float = os.environ.get("MIMO_TEST_FLOAT")
+        try:
+            os.environ["MIMO_TEST_INT"] = "bad"
+            os.environ["MIMO_TEST_FLOAT"] = "bad"
+            self.assertEqual(get_env_int("MIMO_TEST_INT", 7, min_value=10), 10)
+            self.assertEqual(get_env_float("MIMO_TEST_FLOAT", 1.5, min_value=2.0), 2.0)
+        finally:
+            if old_int is None:
+                os.environ.pop("MIMO_TEST_INT", None)
+            else:
+                os.environ["MIMO_TEST_INT"] = old_int
+            if old_float is None:
+                os.environ.pop("MIMO_TEST_FLOAT", None)
+            else:
+                os.environ["MIMO_TEST_FLOAT"] = old_float
+
+    def test_invalid_bool_env_falls_back(self):
+        import os
+        from mimo2api.config import get_env_bool
+
+        old_value = os.environ.get("MIMO_TEST_BOOL")
+        try:
+            os.environ["MIMO_TEST_BOOL"] = "maybe"
+            self.assertTrue(get_env_bool("MIMO_TEST_BOOL", True))
+        finally:
+            if old_value is None:
+                os.environ.pop("MIMO_TEST_BOOL", None)
+            else:
+                os.environ["MIMO_TEST_BOOL"] = old_value

@@ -47,6 +47,7 @@ from .auth import (
     require_ai_request,
     require_webui_request,
 )
+from .config import get_env_float, get_env_int
 from .openclaw_protocol import build_protocol_catalog
 from .metrics_store import (
     METRICS_BUCKET_SECONDS,
@@ -88,7 +89,7 @@ sweeper_bg_task = None
 legacy_sweeper_task = None
 single_process_lock_file = None
 STALE_QUEUE_TTL = 300
-SHUTDOWN_TASK_TIMEOUT = float(os.getenv("MIMO_SHUTDOWN_TASK_TIMEOUT", "5"))
+SHUTDOWN_TASK_TIMEOUT = get_env_float("MIMO_SHUTDOWN_TASK_TIMEOUT", 5.0, min_value=1.0)
 
 def sweep_stale_queues_once(now: float | None = None) -> int:
     now = time.time() if now is None else now
@@ -442,17 +443,60 @@ STREAM_CHUNK_TIMEOUT = 60
 STREAM_KEEPALIVE_INTERVAL = 25  # 秒，需小于 Cloudflare 超时 (~100s)
 QUEUE_DRAIN_TIMEOUT = 5
 DEFAULT_GATEWAY_ERROR = "Gateway Error: 所有节点请求失败"
-NODE_401_COOLDOWN_SECONDS = int(os.getenv("MIMO_NODE_401_COOLDOWN_SECONDS", "60"))
+NODE_401_COOLDOWN_SECONDS = get_env_int("MIMO_NODE_401_COOLDOWN_SECONDS", 60, min_value=0)
+LEGACY_REJECT_HOLD_SECONDS = get_env_int("MIMO_LEGACY_REJECT_HOLD_SECONDS", 30, min_value=0)
+LEGACY_REJECT_LOG_INTERVAL_SECONDS = get_env_int("MIMO_LEGACY_REJECT_LOG_INTERVAL_SECONDS", 30, min_value=1)
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROCESS_LOCK_PATH = os.getenv("MIMO_PROCESS_LOCK_PATH", os.path.join(ROOT_DIR, "mimo2api.lock"))
 
 # 后台 fire-and-forget 任务集合
 _background_tasks: set[asyncio.Task] = set()
 PROCESS_LOCK_SIZE = 1
+_legacy_reject_last_log_at = 0.0
+_legacy_reject_suppressed = 0
 
 def _track_task(task: asyncio.Task) -> None:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def should_log_legacy_reject(now: float | None = None) -> tuple[bool, int]:
+    """Rate-limit strict-mode legacy bridge rejection logs.
+
+    Old injected bridge.py copies may reconnect every few seconds without a uid.
+    Strict mode must still reject them, but logging every reconnect can drown out
+    actionable gateway errors.  Return whether to log and how many rejections
+    were suppressed since the previous log line.
+    """
+    global _legacy_reject_last_log_at, _legacy_reject_suppressed
+    now = time.time() if now is None else now
+    if _legacy_reject_last_log_at == 0 or now - _legacy_reject_last_log_at >= LEGACY_REJECT_LOG_INTERVAL_SECONDS:
+        suppressed = _legacy_reject_suppressed
+        _legacy_reject_suppressed = 0
+        _legacy_reject_last_log_at = now
+        return True, suppressed
+    _legacy_reject_suppressed += 1
+    return False, 0
+
+
+async def reject_legacy_ws(ws: WebSocket, client_addr: str) -> None:
+    """Reject uid-less bridges in strict mode without causing tight reconnect storms."""
+    should_log, suppressed = should_log_legacy_reject()
+    if should_log:
+        suffix = f"，上个窗口已抑制 {suppressed} 条同类日志" if suppressed else ""
+        logger.warning(
+            f"🚫 拒绝 legacy uid=<none> 连接: addr={client_addr}，因 uid 节点已存在{suffix}；"
+            f"hold={LEGACY_REJECT_HOLD_SECONDS}s"
+        )
+    if LEGACY_REJECT_HOLD_SECONDS > 0:
+        try:
+            await asyncio.sleep(LEGACY_REJECT_HOLD_SECONDS)
+        except asyncio.CancelledError:
+            raise
+    try:
+        await ws.close(code=1008, reason="uid required while uid pool is active")
+    except Exception:
+        pass
 
 def _lock_file_nonblocking(lock_file: TextIO) -> None:
     if os.name == "nt":
@@ -636,11 +680,7 @@ async def ws_tunnel(ws: WebSocket):
     client_addr = f"{ws.client.host}:{ws.client.port}" if ws.client else "Unknown"
     uid = (ws.query_params.get("uid") or "").strip()
     if not uid and not ALLOW_LEGACY_WS_FALLBACK and any(state.client_uids.values()):
-        logger.warning(f"🚫 拒绝新的 legacy uid=<none> 连接: addr={client_addr}，因 uid 节点已存在")
-        try:
-            await ws.close()
-        except Exception:
-            pass
+        await reject_legacy_ws(ws, client_addr)
         return
     state.active_clients.append(ws)
     state.client_connected_at[id(ws)] = time.time()
@@ -1322,6 +1362,28 @@ async def responses_handler(request: Request):
                         while True:
                             done, _ = await asyncio.wait({data_task, keepalive_task}, return_when=asyncio.FIRST_COMPLETED)
 
+                            # Prefer real data over keepalive if both complete
+                            # in the same event-loop tick; otherwise a chunk can
+                            # be dropped and the stream may never emit completed.
+                            if data_task in done:
+                                last_data_time = time.monotonic()
+                                msg = data_task.result()
+                                data_task = asyncio.ensure_future(current_queue.get())
+                                if msg.get("type") == "finish":
+                                    stream_succeeded = True
+                                    for evt in converter.finalize():
+                                        yield evt.encode("utf-8")
+                                    break
+                                elif msg.get("type") == "error":
+                                    err_evt = f"event: error\ndata: {json.dumps({'type': 'error', 'message': msg.get('body')})}\n\n"
+                                    yield err_evt.encode("utf-8")
+                                    break
+                                elif msg.get("type") == "chunk":
+                                    for line in msg.get("body", "").split("\n"):
+                                        for evt in converter.process_chunk(line):
+                                            yield evt.encode("utf-8")
+                                continue
+
                             if keepalive_task in done:
                                 elapsed = time.monotonic() - last_data_time
                                 if elapsed > STREAM_CHUNK_TIMEOUT:
@@ -1331,24 +1393,6 @@ async def responses_handler(request: Request):
                                     break
                                 yield keepalive_task.result()
                                 keepalive_task = asyncio.ensure_future(_do_keepalive())
-                                continue
-
-                            last_data_time = time.monotonic()
-                            data_task = asyncio.ensure_future(current_queue.get())
-                            msg = done.pop().result()
-                            if msg.get("type") == "finish":
-                                stream_succeeded = True
-                                for evt in converter.finalize():
-                                    yield evt.encode("utf-8")
-                                break
-                            elif msg.get("type") == "error":
-                                err_evt = f"event: error\ndata: {json.dumps({'type': 'error', 'message': msg.get('body')})}\n\n"
-                                yield err_evt.encode("utf-8")
-                                break
-                            elif msg.get("type") == "chunk":
-                                for line in msg.get("body", "").split("\n"):
-                                    for evt in converter.process_chunk(line):
-                                        yield evt.encode("utf-8")
                     finally:
                         data_task.cancel()
                         keepalive_task.cancel()
@@ -1498,6 +1542,11 @@ async def _forward_request(request: Request, path: str):
                 if use_keepalive:
                     keepalive_task = asyncio.ensure_future(_do_keepalive())
 
+                def _format_stream_error(message: str) -> bytes:
+                    if use_keepalive or str(content_type).startswith("text/event-stream"):
+                        return f"event: error\ndata: {json.dumps({'type': 'error', 'message': message})}\n\n".encode("utf-8")
+                    return json.dumps({"error": {"message": message, "type": "upstream_error", "code": 502}}, ensure_ascii=False).encode("utf-8")
+
                 try:
                     while True:
                         pending = {data_task}
@@ -1505,28 +1554,37 @@ async def _forward_request(request: Request, path: str):
                             pending.add(keepalive_task)
                         done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
+                        # Real upstream data wins over keepalive if both are
+                        # ready.  Dropping a finish/error frame here leaves the
+                        # client hanging and leaks the pending request until the
+                        # stale sweeper catches it.
+                        if data_task in done:
+                            last_data_time = time.monotonic()
+                            msg = data_task.result()
+                            data_task = asyncio.ensure_future(current_queue.get())
+                            if msg.get("type") == "finish":
+                                stream_succeeded = True
+                                break
+                            elif msg.get("type") == "error":
+                                error_text = str(msg.get("body") or "节点返回错误")
+                                record_error(route_key, 502, "节点流式转发中途返回错误", detail=error_text[:500])
+                                yield _format_stream_error(error_text)
+                                break
+                            elif msg.get("type") == "chunk":
+                                chunk_body = msg.get("body", "")
+                                if usage_data is None:
+                                    usage_data = extract_usage_from_sse_chunk(chunk_body)
+                                yield chunk_body.encode("utf-8")
+                            continue
+
                         if keepalive_task is not None and keepalive_task in done:
                             elapsed = time.monotonic() - last_data_time
                             if elapsed > STREAM_CHUNK_TIMEOUT:
                                 logger.warning(f"⚠️ 流式 {elapsed:.0f}s 无数据，节点可能已断开 [{current_req_id[:8]}]")
-                                err_evt = f"event: error\ndata: {json.dumps({'type': 'error', 'message': '上游流式响应超时或断开，未收到完成事件'})}\n\n"
-                                yield err_evt.encode("utf-8")
+                                yield _format_stream_error("上游流式响应超时或断开，未收到完成事件")
                                 break
                             yield keepalive_task.result()
                             keepalive_task = asyncio.ensure_future(_do_keepalive())
-                            continue
-
-                        last_data_time = time.monotonic()
-                        data_task = asyncio.ensure_future(current_queue.get())
-                        msg = done.pop().result()
-                        if msg.get("type") == "finish":
-                            stream_succeeded = True
-                            break
-                        elif msg.get("type") == "chunk":
-                            chunk_body = msg.get("body", "")
-                            if usage_data is None:
-                                usage_data = extract_usage_from_sse_chunk(chunk_body)
-                            yield chunk_body.encode("utf-8")
                 finally:
                     data_task.cancel()
                     if keepalive_task is not None:

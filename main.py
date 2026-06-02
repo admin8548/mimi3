@@ -12,9 +12,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from mimo2api.config import get_env_int
+
 # ================= 统一全局配置（优先读 .env，有默认值兜底） =================
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
-SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
+SERVER_PORT = get_env_int("SERVER_PORT", 8000, min_value=1, max_value=65535)
 WS_TUNNEL_URL = os.getenv("WS_TUNNEL_URL", f"ws://{SERVER_HOST}:{SERVER_PORT}/ws")
 # ================================================
 

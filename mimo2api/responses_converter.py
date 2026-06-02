@@ -386,7 +386,7 @@ def convert_response(chat_resp: dict[str, Any]) -> dict[str, Any]:
 def _sse_event(event_type: str, data: Union[dict, BaseModel]) -> str:
     """格式化单条 SSE 事件，支持直接传入 Pydantic 模型。"""
     payload = data.model_dump(exclude_none=True) if isinstance(
-        data, BaseModel) else data
+        data, BaseModel) else dict(data)
     payload["type"] = event_type
 
     def _default(obj):

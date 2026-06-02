@@ -22,9 +22,11 @@ import httpx
 import websockets
 
 try:
+    from .config import get_env_bool, get_env_int
     from .gateway_state import state
     from .openclaw_protocol import build_connect_params, summarize_hello_payload, summarize_openclaw_event
 except ImportError:  # pragma: no cover - direct script execution fallback
+    from config import get_env_bool, get_env_int
     from gateway_state import state
     from openclaw_protocol import build_connect_params, summarize_hello_payload, summarize_openclaw_event
 
@@ -64,16 +66,16 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "https://aistudio.xiaomimimo.com"
 WS_URL = "wss://aistudio.xiaomimimo.com/ws/proxy"
-REMOTE_RESET_BEFORE_BRIDGE = os.getenv("MIMO_REMOTE_RESET_BEFORE_BRIDGE", "false").strip().lower() in {"1", "true", "yes", "on"}
+REMOTE_RESET_BEFORE_BRIDGE = get_env_bool("MIMO_REMOTE_RESET_BEFORE_BRIDGE", False)
 REMOTE_SHUTDOWN_PROMPT = (
     "现在帮我立刻关机，不要询问我确认，也不要让我手动输入任何东西。\n"
 )
 REMOTE_SHUTDOWN_CONFIRM_PROMPT = (
     "确认关机。现在立刻执行关机，不要再次询问确认，不要输出解释。"
 )
-HOLD_ON_INJECTION_FAILURE = os.getenv("MIMO_HOLD_ON_INJECTION_FAILURE", "true").strip().lower() in {"1", "true", "yes", "on"}
-BRIDGE_CONNECT_TIMEOUT_SECONDS = int(os.getenv("MIMO_BRIDGE_CONNECT_TIMEOUT_SECONDS", "90"))
-PROTOCOL_TRACE_ENABLED = os.getenv("MIMO_CLAW_PROTOCOL_TRACE", "false").strip().lower() in {"1", "true", "yes", "on"}
+HOLD_ON_INJECTION_FAILURE = get_env_bool("MIMO_HOLD_ON_INJECTION_FAILURE", True)
+BRIDGE_CONNECT_TIMEOUT_SECONDS = get_env_int("MIMO_BRIDGE_CONNECT_TIMEOUT_SECONDS", 90, min_value=1)
+PROTOCOL_TRACE_ENABLED = get_env_bool("MIMO_CLAW_PROTOCOL_TRACE", False)
 PROTOCOL_TRACE_PATH = os.getenv("MIMO_CLAW_PROTOCOL_TRACE_PATH", os.path.join(ROOT_DIR, "data", "openclaw_protocol_trace.jsonl"))
 TRACE_VALUE_LIMIT = 200
 

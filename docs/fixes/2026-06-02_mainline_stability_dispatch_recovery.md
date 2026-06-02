@@ -1,0 +1,41 @@
+# 2026-06-02 主线稳定性 / API 兼容 / 调度 / 错误恢复推进记录
+
+## Outcome
+
+本轮从 OpenClaw 协议研究收束后回到 `mimo2api` 主线，优先修复了网关与 bridge 在高噪声、流式响应、错误恢复场景下的稳定性问题。
+
+## Key Changes
+
+- `mimo2api/web_service.py`
+  - 对严格模式下的 legacy `uid=<none>` bridge 拒绝日志做限频，避免旧 bridge 快速重连时刷爆 `gateway.log`。
+  - 对被拒绝的 legacy websocket 增加短暂 hold 后再关闭，降低旧远端脚本固定短周期重连造成的连接风暴。
+  - 修复 Responses SSE 与通用转发流中 keepalive/data 同时就绪时优先处理 keepalive 导致真实 chunk/finish/error 丢失的竞态。
+  - 通用转发流现在会处理节点中途 `error` 帧，避免客户端挂住并等待 stale sweeper 兜底。
+- `mimo2api/bridge.py`
+  - bridge 升级到 `BRIDGE_VERSION: 2.2`。
+  - websocket 重连从固定 3 秒改为指数退避 + jitter，并设置 open/ping/close timeout。
+- `mimo2api/responses_converter.py`
+  - `_sse_event()` 不再原地修改输入 payload，降低复用 payload 时的隐性副作用。
+- `mimo2api/config.py`
+  - 新增 `get_env_bool/get_env_int/get_env_float`，对关键环境变量做容错解析与上下界钳制。
+  - 已接入 `main.py`、`web_service.py`、`metrics_store.py`、`manager.py` 的端口/超时/指标窗口/开关配置。
+- `tests/test_gateway_diagnostics.py`
+  - 增加 legacy 拒绝日志限频测试。
+  - 增加 Responses SSE payload 不被原地污染测试。
+  - 增加非法数值/布尔环境变量回退测试。
+
+## Verification
+
+```bash
+python3 -m py_compile main.py mimo2api/*.py
+python3 -m unittest discover -s tests -v
+```
+
+结果：18 个单元测试全部通过。
+
+## Recommended Next Steps
+
+1. API 兼容：补 Responses API 的更多非流式/工具调用/多模态历史项回归测试。
+2. 调度：增加节点选择策略的可观测字段，例如 preferred uid fallback 原因、冷却原因、近 N 次失败状态。
+3. 错误恢复：继续扩大容错范围到剩余外部输入，例如用户 JSON 文件 schema、模型映射 JSON 与 WebUI 用户导入内容。
+4. 运行期：观察 `gateway.log` 中 legacy 拒绝风暴是否降噪；必要时调大 `MIMO_LEGACY_REJECT_HOLD_SECONDS` 或临时允许 legacy fallback。
