@@ -23,6 +23,11 @@ router = APIRouter()
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 USERS_DIR = os.path.join(ROOT_DIR, "users")
+USER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def is_valid_user_id(uid: str | None) -> bool:
+    return isinstance(uid, str) and bool(USER_ID_RE.fullmatch(uid.strip()))
 
 
 @router.get("/")
@@ -159,6 +164,9 @@ async def api_users_add(request: Request):
         
         if not uid or not st or not ph:
             return JSONResponse({"detail": "缺少必要字段 userId, serviceToken 或 xiaomichatbot_ph"}, status_code=400)
+        uid = uid.strip()
+        if not is_valid_user_id(uid):
+            return JSONResponse({"detail": "userId 只能包含字母、数字、下划线、点和短横线，长度 1-128"}, status_code=400)
             
         os.makedirs(USERS_DIR, exist_ok=True)
         target_file = os.path.join(USERS_DIR, f"user_{uid}.json")
@@ -178,6 +186,9 @@ async def api_users_add(request: Request):
 
 @router.delete("/api/users/delete/{uid}")
 async def api_users_delete(uid: str):
+    uid = uid.strip()
+    if not is_valid_user_id(uid):
+        return JSONResponse({"detail": "非法 userId"}, status_code=400)
     target_file = os.path.join(USERS_DIR, f"user_{uid}.json")
     if os.path.exists(target_file):
         os.remove(target_file)

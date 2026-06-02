@@ -59,3 +59,23 @@ python3 -m unittest discover -s tests -v
 - `ResponsesToolCompatibilityTests.test_convert_request_accepts_responses_and_chat_style_function_tools`
 
 当前测试数：20。
+
+## Follow-up Batch: Config/File Input Recovery
+
+### Outcome
+
+- 模型映射路径新增 `MIMO_MODEL_MAPPING_PATH`，Docker 默认指向 `/app/data/model_mapping.json`，与挂载目录保持一致。
+- `PUT /api/model_mapping` 现在要求映射必须是“非空字符串 -> 非空字符串”的 JSON 对象，避免非字符串 model 值污染上游请求。
+- 保存模型映射前会自动创建父目录。
+- WebUI 用户导入/删除新增 userId 校验：仅允许字母、数字、下划线、点、短横线，长度 1-128，避免异常路径/非法 uid 进入文件名。
+- `README.md`、`env.example`、`Dockerfile` 同步补充 `MIMO_MODEL_MAPPING_PATH`。
+
+### Verification
+
+新增回归测试：
+
+- `ModelMappingValidationTests.test_model_mapping_requires_string_to_string_entries`
+- `ModelMappingValidationTests.test_model_mapping_put_rejects_invalid_schema`
+- `UserIdValidationTests.test_user_id_validation_rejects_path_like_values`
+
+当前测试数：23。

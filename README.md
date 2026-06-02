@@ -43,6 +43,7 @@ Docker Compose 会挂载以下本地目录：
 MIMO_METRICS_DB_PATH=/app/data/gateway_metrics.db
 MIMO_METRICS_SNAPSHOT_PATH=/app/data/gateway_snapshot.json
 MIMO_PROCESS_LOCK_PATH=/app/data/mimo2api.lock
+MIMO_MODEL_MAPPING_PATH=/app/data/model_mapping.json
 ```
 
 ## 前置条件

@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SERVER_PORT=8000 \
     MIMO_METRICS_DB_PATH=/app/data/gateway_metrics.db \
     MIMO_METRICS_SNAPSHOT_PATH=/app/data/gateway_snapshot.json \
-    MIMO_PROCESS_LOCK_PATH=/app/data/mimo2api.lock
+    MIMO_PROCESS_LOCK_PATH=/app/data/mimo2api.lock \
+    MIMO_MODEL_MAPPING_PATH=/app/data/model_mapping.json
 
 WORKDIR /app
 

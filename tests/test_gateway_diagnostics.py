@@ -388,3 +388,31 @@ class ResponsesToolCompatibilityTests(unittest.TestCase):
 
         self.assertEqual([tool["function"]["name"] for tool in converted["tools"]], ["lookup", "chat_style"])
         self.assertEqual(converted["messages"][0]["content"], "hi")
+
+
+class ModelMappingValidationTests(unittest.TestCase):
+    def test_model_mapping_requires_string_to_string_entries(self):
+        from mimo2api.web_service import normalize_model_mapping
+
+        self.assertEqual(normalize_model_mapping({"gpt-test": "mimo-v2.5"}), {"gpt-test": "mimo-v2.5"})
+        self.assertEqual(normalize_model_mapping({" gpt-test ": " mimo-v2.5 "}), {"gpt-test": "mimo-v2.5"})
+        self.assertIsNone(normalize_model_mapping(["bad"]))
+        self.assertIsNone(normalize_model_mapping({"": "mimo-v2.5"}))
+        self.assertIsNone(normalize_model_mapping({"gpt-test": ""}))
+        self.assertIsNone(normalize_model_mapping({"gpt-test": 123}))
+
+    def test_model_mapping_put_rejects_invalid_schema(self):
+        resp = TestClient(app).put("/api/model_mapping", json={"gpt-test": 123})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("映射必须", resp.json()["error"])
+
+
+class UserIdValidationTests(unittest.TestCase):
+    def test_user_id_validation_rejects_path_like_values(self):
+        from mimo2api.ui_router import is_valid_user_id
+
+        self.assertTrue(is_valid_user_id("6875021188"))
+        self.assertTrue(is_valid_user_id("user_1.test-2"))
+        self.assertFalse(is_valid_user_id("../evil"))
+        self.assertFalse(is_valid_user_id(""))
+        self.assertFalse(is_valid_user_id("x" * 129))

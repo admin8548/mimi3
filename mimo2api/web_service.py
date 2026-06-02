@@ -24,7 +24,7 @@ try:
 except ImportError:
     msvcrt = None
 
-MODEL_MAPPING_FILE = Path(__file__).parent.parent / "model_mapping.json"
+MODEL_MAPPING_FILE = Path(os.getenv("MIMO_MODEL_MAPPING_PATH", Path(__file__).parent.parent / "model_mapping.json"))
 
 # 引入 Manager 长驻协程任务
 from .manager import start_manager_tasks, trigger_rebuild
@@ -621,15 +621,33 @@ async def api_openclaw_events(limit: int = 100):
     events.reverse()
     return JSONResponse(content={"count": len(events), "events": events})
 
+def normalize_model_mapping(raw_mapping: Any) -> dict[str, str] | None:
+    if not isinstance(raw_mapping, dict):
+        return None
+    normalized: dict[str, str] = {}
+    for source_model, target_model in raw_mapping.items():
+        if not isinstance(source_model, str) or not isinstance(target_model, str):
+            return None
+        source_model = source_model.strip()
+        target_model = target_model.strip()
+        if not source_model or not target_model:
+            return None
+        normalized[source_model] = target_model
+    return normalized
+
+
 def load_model_mapping() -> dict[str, str]:
     if not MODEL_MAPPING_FILE.exists():
         return {}
     try:
-        return json.loads(MODEL_MAPPING_FILE.read_text("utf-8"))
+        loaded = json.loads(MODEL_MAPPING_FILE.read_text("utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+    normalized = normalize_model_mapping(loaded)
+    return normalized or {}
 
 def save_model_mapping(mapping: dict[str, str]) -> None:
+    MODEL_MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = MODEL_MAPPING_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), "utf-8")
     tmp.rename(MODEL_MAPPING_FILE)
@@ -660,10 +678,11 @@ async def api_put_model_mapping(request: Request):
         new_mapping = json.loads(body.decode("utf-8", "ignore").lstrip("\ufeff"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return JSONResponse({"error": "请求体不是合法 JSON"}, status_code=400)
-    if not isinstance(new_mapping, dict):
-        return JSONResponse({"error": "映射必须是 JSON 对象"}, status_code=400)
-    save_model_mapping(new_mapping)
-    return JSONResponse(content=new_mapping)
+    normalized_mapping = normalize_model_mapping(new_mapping)
+    if normalized_mapping is None:
+        return JSONResponse({"error": "映射必须是非空字符串到非空字符串的 JSON 对象"}, status_code=400)
+    save_model_mapping(normalized_mapping)
+    return JSONResponse(content=normalized_mapping)
 
 @app.delete("/api/model_mapping/{model_name:path}")
 async def api_delete_model_mapping(model_name: str):
