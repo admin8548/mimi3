@@ -100,7 +100,12 @@ def _extract_message_content(content: Any) -> Union[str, list[dict[str, Any]]]:
         ptype = part.get("type", "")
         if ptype in ("input_text", "output_text", "text"):
             parts.append({"type": "text", "text": part.get("text", "")})
-        elif ptype == "input_image" and (url := part.get("image_url", part.get("url", ""))):
+        elif ptype == "input_image":
+            url = part.get("image_url", part.get("url", ""))
+            if isinstance(url, dict):
+                url = url.get("url", "")
+            if not url:
+                continue
             parts.append({"type": "image_url", "image_url": {"url": url}})
         elif ptype == "input_file":
             parts.append(
@@ -552,7 +557,13 @@ class ResponsesStreamConverter:
     def _emit_response_created(self) -> Iterator[str]:
         if not self._response_created_emitted:
             self._response_created_emitted = True
-            yield _sse_event("response.created", {"response": self._base_response("in_progress")})
+            response = self._base_response("in_progress")
+            yield _sse_event("response.created", {"response": response})
+            # Some Responses API clients wait for response.in_progress before
+            # treating the stream as fully established.  Emitting it here keeps
+            # older clients that only consume response.created compatible while
+            # improving parity with the official event sequence.
+            yield _sse_event("response.in_progress", {"response": response})
 
     def _ensure_text_item_started(self) -> Iterator[str]:
         yield from self._emit_response_created()
@@ -585,6 +596,7 @@ class ResponsesStreamConverter:
             self._text_closed = True
             text_part = {"type": "output_text",
                          "text": self._text_buf, "annotations": []}
+            yield _sse_event("response.output_text.done", {"output_index": self._text_out_idx, "content_index": 0, "text": self._text_buf})
             yield _sse_event("response.content_part.done", {"output_index": self._text_out_idx, "content_index": 0, "part": text_part})
             msg_item = RespMessageItem(
                 id=self._msg_id, role="assistant", status="completed", content=[text_part])

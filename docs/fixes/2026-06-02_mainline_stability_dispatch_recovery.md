@@ -79,3 +79,32 @@ python3 -m unittest discover -s tests -v
 - `UserIdValidationTests.test_user_id_validation_rejects_path_like_values`
 
 当前测试数：23。
+
+## Follow-up Batch: Responses SSE Parity + Dispatch Pool Explanation
+
+### Outcome
+
+- Responses 流式转换器新增 `response.in_progress` 事件，提升与官方 Responses SSE 序列的兼容性。
+- 文本输出结束时新增 `response.output_text.done`，客户端可在 content part done 前拿到完整文本事件。
+- Responses 输入中的 `input_image.image_url` 支持对象形态：`{"image_url":{"url":"..."}}`。
+- `/api/stats` 新增顶层 `dispatchable_clients`，区分 raw available clients 与实际可调度节点数。
+- `/api/stats` 新增 `dispatch_pool`：
+  - `effective_pool`
+  - `dispatchable_clients`
+  - `available_clients_raw`
+  - `available_uid_clients`
+  - `available_legacy_clients`
+  - `preferred_uid_available_clients`
+  - `fallback_reason`
+  - `available_uids`
+- `preferred_uid` 明细新增 `available_count`，`fallback_active` 改为基于 preferred 可用节点数计算。
+
+### Verification
+
+新增回归测试：
+
+- `DispatchPoolStatsTests.test_dispatch_pool_explains_preferred_uid_fallback`
+- `ResponsesStreamingCompatibilityTests.test_stream_converter_emits_in_progress_and_output_text_done`
+- `ResponsesStreamingCompatibilityTests.test_response_input_image_url_object_is_normalized`
+
+当前测试数：26。

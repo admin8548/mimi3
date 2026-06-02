@@ -541,9 +541,12 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
     now = time.time()
     nodes: list[dict[str, Any]] = []
     available_clients = 0
+    available_uid_clients = 0
+    available_legacy_clients = 0
     uid_clients = 0
     legacy_clients = 0
     uid_counts: dict[str, int] = {}
+    available_uid_counts: dict[str, int] = {}
     metrics = state.metrics
 
     for index, client in enumerate(state.active_clients):
@@ -560,8 +563,13 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
         if uid:
             uid_clients += 1
             uid_counts[uid] = uid_counts.get(uid, 0) + 1
+            if is_available:
+                available_uid_clients += 1
+                available_uid_counts[uid] = available_uid_counts.get(uid, 0) + 1
         else:
             legacy_clients += 1
+            if is_available:
+                available_legacy_clients += 1
         node_metrics = metrics["nodes"].get(node_key, {})
         node_attempt_total = int(node_metrics.get("attempts_total", 0))
         nodes.append({
@@ -626,10 +634,30 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
         if uid.strip()
     )
     preferred_online_count = uid_counts.get(preferred_uid, 0) if preferred_uid else 0
+    preferred_available_count = available_uid_counts.get(preferred_uid, 0) if preferred_uid else 0
+
+    if preferred_uid and preferred_available_count > 0:
+        effective_dispatch_pool = "preferred_uid"
+        dispatchable_clients = preferred_available_count
+        fallback_reason = ""
+    elif available_uid_clients > 0:
+        effective_dispatch_pool = "uid"
+        dispatchable_clients = available_uid_clients
+        fallback_reason = "preferred_uid_unavailable" if preferred_uid else ""
+    elif legacy_fallback_enabled and available_legacy_clients > 0:
+        effective_dispatch_pool = "legacy"
+        dispatchable_clients = available_legacy_clients
+        fallback_reason = "no_uid_clients_available"
+    else:
+        effective_dispatch_pool = "none"
+        dispatchable_clients = 0
+        fallback_reason = "strict_mode_requires_uid" if available_legacy_clients > 0 else "no_available_clients"
+
     return {
         "uptime_seconds": int(now - state.metrics_started_at),
         "active_clients": len(state.active_clients),
         "available_clients": available_clients,
+        "dispatchable_clients": dispatchable_clients,
         "cooldown_clients": len(state.active_clients) - available_clients,
         "uid_coverage": {
             "uid_clients": uid_clients,
@@ -644,12 +672,23 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
             "legacy_fallback_enabled": legacy_fallback_enabled,
             "legacy_used_only_when_no_uid_available": bool(uid_clients) or legacy_fallback_enabled,
         },
+        "dispatch_pool": {
+            "effective_pool": effective_dispatch_pool,
+            "dispatchable_clients": dispatchable_clients,
+            "available_clients_raw": available_clients,
+            "available_uid_clients": available_uid_clients,
+            "available_legacy_clients": available_legacy_clients,
+            "preferred_uid_available_clients": preferred_available_count,
+            "fallback_reason": fallback_reason,
+            "available_uids": available_uid_counts,
+        },
         "preferred_uid": {
             "configured": preferred_uid,
             "online": bool(preferred_online_count),
             "online_count": preferred_online_count,
+            "available_count": preferred_available_count,
             "is_excluded_from_manager": preferred_uid in excluded_user_ids if preferred_uid else False,
-            "fallback_active": bool(preferred_uid and not preferred_online_count and available_clients > 0),
+            "fallback_active": bool(preferred_uid and preferred_available_count == 0 and dispatchable_clients > 0),
         },
         "manager_excluded_user_ids": excluded_user_ids,
         "pending_requests": len(state.pending_queues),

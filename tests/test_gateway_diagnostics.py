@@ -416,3 +416,101 @@ class UserIdValidationTests(unittest.TestCase):
         self.assertFalse(is_valid_user_id("../evil"))
         self.assertFalse(is_valid_user_id(""))
         self.assertFalse(is_valid_user_id("x" * 129))
+
+
+class DispatchPoolStatsTests(unittest.TestCase):
+    def test_dispatch_pool_explains_preferred_uid_fallback(self):
+        import os
+        import time
+        from mimo2api.gateway_state import state
+        from mimo2api.metrics_store import build_gateway_stats
+
+        class ClientInfo:
+            host = "127.0.0.1"
+
+        class DummyWs:
+            client = ClientInfo()
+
+        preferred = DummyWs()
+        other_uid = DummyWs()
+        legacy = DummyWs()
+        old_env_preferred = os.environ.get("MIMO_PREFERRED_UID")
+        old_env_legacy = os.environ.get("MIMO_ALLOW_LEGACY_WS_FALLBACK")
+        old_clients = list(state.active_clients)
+        old_uids = dict(state.client_uids)
+        old_cooldowns = dict(state.client_cooldowns)
+        old_cooldown_reasons = dict(state.client_cooldown_reasons)
+        old_ws_to_req_ids = dict(state.ws_to_req_ids)
+        try:
+            os.environ["MIMO_PREFERRED_UID"] = "preferred"
+            os.environ["MIMO_ALLOW_LEGACY_WS_FALLBACK"] = "false"
+            state.active_clients[:] = [preferred, other_uid, legacy]
+            state.client_uids.clear()
+            state.client_uids[id(preferred)] = "preferred"
+            state.client_uids[id(other_uid)] = "other"
+            state.client_cooldowns.clear()
+            state.client_cooldowns[id(preferred)] = time.time() + 60
+            state.client_cooldown_reasons.clear()
+            state.ws_to_req_ids.clear()
+
+            stats = build_gateway_stats(background_tasks_count=0)
+            self.assertEqual(stats["available_clients"], 2)
+            self.assertEqual(stats["dispatchable_clients"], 1)
+            self.assertEqual(stats["dispatch_pool"]["effective_pool"], "uid")
+            self.assertEqual(stats["dispatch_pool"]["fallback_reason"], "preferred_uid_unavailable")
+            self.assertEqual(stats["dispatch_pool"]["available_uid_clients"], 1)
+            self.assertEqual(stats["dispatch_pool"]["available_legacy_clients"], 1)
+            self.assertEqual(stats["preferred_uid"]["available_count"], 0)
+            self.assertTrue(stats["preferred_uid"]["fallback_active"])
+        finally:
+            if old_env_preferred is None:
+                os.environ.pop("MIMO_PREFERRED_UID", None)
+            else:
+                os.environ["MIMO_PREFERRED_UID"] = old_env_preferred
+            if old_env_legacy is None:
+                os.environ.pop("MIMO_ALLOW_LEGACY_WS_FALLBACK", None)
+            else:
+                os.environ["MIMO_ALLOW_LEGACY_WS_FALLBACK"] = old_env_legacy
+            state.active_clients[:] = old_clients
+            state.client_uids.clear()
+            state.client_uids.update(old_uids)
+            state.client_cooldowns.clear()
+            state.client_cooldowns.update(old_cooldowns)
+            state.client_cooldown_reasons.clear()
+            state.client_cooldown_reasons.update(old_cooldown_reasons)
+            state.ws_to_req_ids.clear()
+            state.ws_to_req_ids.update(old_ws_to_req_ids)
+
+
+class ResponsesStreamingCompatibilityTests(unittest.TestCase):
+    def test_stream_converter_emits_in_progress_and_output_text_done(self):
+        import json
+        from mimo2api.responses_converter import ResponsesStreamConverter
+
+        converter = ResponsesStreamConverter(model="mimo-v2.5")
+        events = []
+        events.extend(converter.process_chunk("data: " + json.dumps({
+            "choices": [{"delta": {"role": "assistant", "content": "hello"}}]
+        })))
+        events.extend(converter.process_chunk("data: " + json.dumps({
+            "choices": [{"delta": {}, "finish_reason": "stop"}]
+        })))
+        events.extend(converter.process_chunk("data: [DONE]"))
+        joined = "".join(events)
+        self.assertIn("event: response.in_progress", joined)
+        self.assertIn("event: response.output_text.done", joined)
+        self.assertIn('"text": "hello"', joined)
+
+    def test_response_input_image_url_object_is_normalized(self):
+        from mimo2api.responses_converter import convert_request
+
+        converted = convert_request({
+            "model": "mimo-v2.5",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": {"url": "data:image/png;base64,abc"}}],
+            }],
+        })
+        content = converted["messages"][0]["content"]
+        self.assertEqual(content[0]["image_url"]["url"], "data:image/png;base64,abc")
