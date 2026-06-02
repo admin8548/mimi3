@@ -120,7 +120,7 @@ cd /home/ubuntu/mimo2api
 mkdir -p /tmp/mimo2api_compaction_fix/mimo2api
 cp mimo2api/web_service.py /tmp/mimo2api_compaction_fix/mimo2api/web_service.py
 cp mimo2api/responses_converter.py /tmp/mimo2api_compaction_fix/mimo2api/responses_converter.py
-cp DETAILED_remote_compaction_fix_handoff.md /tmp/mimo2api_compaction_fix/
+cp docs/incidents/remote_compaction_fix_handoff.md /tmp/mimo2api_compaction_fix/
 tar -C /tmp -czf /tmp/mimo2api_compaction_fix_20260531.tar.gz mimo2api_compaction_fix
 sha256sum /tmp/mimo2api_compaction_fix_20260531.tar.gz
 ```

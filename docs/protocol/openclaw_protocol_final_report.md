@@ -6,13 +6,13 @@
 
 ## 本轮产物
 
-- 计划文档：`docs/fixes/2026-06-01_openclaw_protocol_deep_research_plan.md`
-- 初步发现：`docs/fixes/2026-06-01_openclaw_protocol_research_findings.md`
-- 最终报告：`docs/fixes/2026-06-01_openclaw_protocol_final_report.md`
+- 计划文档：`docs/protocol/openclaw_protocol_deep_research_plan.md`
+- 初步发现：`docs/protocol/openclaw_protocol_research_findings.md`
+- 最终报告：`docs/protocol/openclaw_protocol_final_report.md`
 - hello-ok 原始特征：`data/openclaw_hello_features.json`
 - 只读矩阵结果：`data/openclaw_readonly_matrix_result.json`
 - 协议 trace 样例：`data/openclaw_protocol_probe_trace.jsonl`, `data/openclaw_readonly_matrix_trace.jsonl`
-- 字段字典：`docs/fixes/2026-06-01_openclaw_protocol_field_dictionary.md`
+- 字段字典：`docs/protocol/openclaw_protocol_field_dictionary.md`
 
 ## 结论总览
 
