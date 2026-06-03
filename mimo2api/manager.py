@@ -501,7 +501,7 @@ class NativeClawClient:
                     await asyncio.sleep(3)
             raise Exception(detail)
 
-    async def connect(self, wait_available=True) -> bool:
+    async def connect(self, wait_available=True, initialize_context: bool = True) -> bool:
         """建立 WebSocket 连接"""
         if wait_available:
             self.logger.info("创建实例并等待可用...")
@@ -542,7 +542,8 @@ class NativeClawClient:
         # 等待后台 loop 处理 hello-ok 完成鉴权挂载
         for _ in range(50):
             if self.connected: 
-                await self.initialize_chat_context()
+                if initialize_context:
+                    await self.initialize_chat_context()
                 return True
             await asyncio.sleep(0.1)
         return False

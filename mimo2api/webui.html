@@ -36,7 +36,7 @@
 
         .container {
             width: 100%;
-            max-width: 900px;
+            max-width: 1100px;
             display: flex;
             flex-direction: column;
             gap: 24px;
@@ -87,6 +87,40 @@
         .badge.warn {
             color: #92400E;
             border-color: rgba(245, 158, 11, 0.25);
+        }
+
+        .tab-nav {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 8px;
+            border-radius: var(--radius-lg);
+            background: rgba(255, 255, 255, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: var(--shadow);
+        }
+
+        .tab-btn {
+            background: transparent;
+            color: #4B5563;
+            border: 1px solid transparent;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn.active {
+            background: white;
+            color: var(--primary);
+            border-color: rgba(79, 70, 229, 0.18);
+            box-shadow: var(--shadow);
+        }
+
+        .tab-panel.hidden {
+            display: none !important;
         }
 
         .glass-card {
@@ -205,6 +239,107 @@
         
         .btn-danger { background: white; color: var(--danger); border: 1px solid #fca5a5; }
         .btn-danger:hover { background: #fef2f2; color: var(--danger-hover); border-color: #f87171; }
+
+        .btn-small {
+            padding: 7px 10px;
+            font-size: 12px;
+        }
+
+        .diagnostics-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 14px;
+        }
+
+        .diagnostics-toolbar select {
+            min-width: 220px;
+        }
+
+        .warning-box {
+            margin-top: 14px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: rgba(254, 243, 199, 0.8);
+            color: #92400E;
+            border: 1px solid rgba(245, 158, 11, 0.25);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-top: 18px;
+        }
+
+        .diagnostic-card {
+            background: rgba(255, 255, 255, 0.62);
+            border: 1px solid rgba(99, 102, 241, 0.12);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            min-height: 140px;
+        }
+
+        .diagnostic-card h3 {
+            margin: 0;
+            font-size: 16px;
+        }
+
+        .diagnostic-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .section-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 12px;
+            font-weight: 700;
+            background: #ECFDF5;
+            color: #047857;
+        }
+
+        .section-badge.error {
+            background: #FEF2F2;
+            color: #B91C1C;
+        }
+
+        .summary-list {
+            margin: 0 0 10px 0;
+            padding: 0;
+            list-style: none;
+            color: #374151;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .json-details summary {
+            cursor: pointer;
+            color: var(--primary);
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .json-block {
+            margin: 8px 0 0 0;
+            max-height: 280px;
+            overflow: auto;
+            padding: 10px;
+            border-radius: 10px;
+            background: rgba(17, 24, 39, 0.92);
+            color: #E5E7EB;
+            font-size: 11px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+        }
 
         .table-wrapper {
             overflow-x: auto;
@@ -382,7 +517,15 @@
             </div>
         </div>
 
-        <!-- 状态卡片 -->
+        <div class="tab-nav" role="tablist">
+            <button id="tabBtn-overview" class="tab-btn active" onclick="switchTab('overview')">概览</button>
+            <button id="tabBtn-users" class="tab-btn" onclick="switchTab('users')">用户</button>
+            <button id="tabBtn-openclaw" class="tab-btn" onclick="switchTab('openclaw')">OpenClaw</button>
+            <button id="tabBtn-errors" class="tab-btn" onclick="switchTab('errors')">错误</button>
+        </div>
+
+        <!-- 概览 Tab -->
+        <div id="tabPanel-overview" class="tab-panel">
         <div class="glass-card">
             <div>
                 <div class="status-container">
@@ -394,8 +537,63 @@
                 </div>
             </div>
         </div>
+        <div class="glass-card">
+            <div class="flex-between" style="align-items:flex-start; gap: 14px; flex-wrap: wrap;">
+                <div>
+                    <h2 style="margin: 0; font-size: 18px;">当前请求节点</h2>
+                    <div class="status-subtext" id="requestNodesSummary">正在获取当前活跃请求...</div>
+                </div>
+                <span id="activeRequestsBadge" class="badge">活跃 0</span>
+            </div>
+            <div style="margin-top: 16px;">
+                <h3 style="margin: 0 0 10px 0; font-size: 15px;">活跃请求</h3>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>请求 ID</th>
+                                <th>路由</th>
+                                <th>模型</th>
+                                <th>Stream</th>
+                                <th>节点 UID</th>
+                                <th>节点地址</th>
+                                <th>耗时</th>
+                                <th>Attempt</th>
+                            </tr>
+                        </thead>
+                        <tbody id="activeRequestsBody">
+                            <tr><td colspan="8" class="empty-state">暂无活跃请求</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div style="margin-top: 18px;">
+                <h3 style="margin: 0 0 10px 0; font-size: 15px;">最近请求命中节点</h3>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>请求 ID</th>
+                                <th>路由</th>
+                                <th>模型</th>
+                                <th>节点</th>
+                                <th>状态</th>
+                                <th>结束原因</th>
+                                <th>耗时</th>
+                                <th>时间</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recentDispatchesBody">
+                            <tr><td colspan="8" class="empty-state">暂无最近请求</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        </div>
 
-        <!-- 用户管理卡片 -->
+        <!-- 用户 Tab -->
+        <div id="tabPanel-users" class="tab-panel hidden">
         <div class="glass-card">
             <div class="flex-between">
                 <h2 style="margin: 0; font-size: 18px;">Claw 运行账号管理</h2>
@@ -420,6 +618,181 @@
                         <tr><td colspan="5" class="empty-state">加载中...</td></tr>
                     </tbody>
                 </table>
+            </div>
+        </div>
+        </div>
+
+        <!-- OpenClaw Diagnostics Tab -->
+        <div id="tabPanel-openclaw" class="tab-panel hidden">
+            <div class="glass-card">
+                <div class="flex-between" style="align-items:flex-start; gap: 14px; flex-wrap: wrap;">
+                    <div>
+                        <h2 style="margin: 0; font-size: 18px;">OpenClaw 诊断</h2>
+                        <div class="status-subtext">只读诊断：health / status / usage / models / tools / sessions / cron / browser。</div>
+                    </div>
+                    <span id="openclawCacheBadge" class="badge">缓存：-</span>
+                </div>
+                <div class="diagnostics-toolbar">
+                    <select id="openclawUidSelect" class="text-input" aria-label="OpenClaw UID selector" onchange="fetchOpenClawDiagnostics(true)"></select>
+                    <button id="openclawRefreshBtn" class="btn" onclick="fetchOpenClawDiagnostics(true)">刷新</button>
+                    <button id="openclawSnapshotBtn" class="btn btn-outline" onclick="loadOpenClawSnapshot()">加载 Snapshot</button>
+                    <span id="openclawUpdatedAt" class="status-subtext">尚未加载</span>
+                </div>
+                <div id="openclawWarning" class="warning-box hidden"></div>
+                <div id="openclawCards" class="diagnostics-grid">
+                    <div class="empty-state">切换到本 Tab 后会自动加载只读诊断。</div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">新增只读观测</h2>
+                    <div class="status-subtext">能力矩阵来自 hello-ok features；Agent 运行观测来自本地已脱敏的 recent_agent_runs / events 摘要。</div>
+                </div>
+                <div id="openclawObservabilityGrid" class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head"><h3>能力矩阵</h3><span class="section-badge">只读</span></div>
+                        <div id="openclawFeatureMatrix" class="status-subtext">等待加载。</div>
+                    </div>
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head"><h3>智能体运行观测</h3><span class="section-badge">只读</span></div>
+                        <div id="openclawAgentRuns" class="status-subtext">等待加载。</div>
+                    </div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">会话预览</h2>
+                    <div class="status-subtext">只读调用 sessions.list + sessions.preview，不执行 compact/reset/delete。</div>
+                </div>
+                <div class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>会话概览</h3>
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawSessionsOverview()">刷新会话</button>
+                        </div>
+                        <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
+                            <input id="openclawCompactKeyInput" class="text-input" style="max-width:260px;" placeholder="要压缩的 session key" aria-label="要压缩的 session key" />
+                            <button class="btn btn-outline btn-small" onclick="previewSessionsCompact()">预览压缩</button>
+                            <button class="btn btn-outline btn-small" onclick="requestSessionsCompactToken()">生成确认令牌</button>
+                            <button class="btn btn-danger btn-small" onclick="executeSessionsCompact()">执行压缩</button>
+                        </div>
+                        <div id="openclawCompactResult" class="status-subtext" style="margin-bottom: 12px;">压缩操作默认关闭，需开启服务端 feature flag。</div>
+                        <div id="openclawSessionsOverview" class="status-subtext">等待加载。</div>
+                    </div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">定时任务只读观测</h2>
+                    <div class="status-subtext">只读调用 cron.status / cron.list / cron.runs，不执行 add/update/remove/run。</div>
+                </div>
+                <div class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>定时任务概览</h3>
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawCronOverview()">刷新定时任务</button>
+                        </div>
+                        <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
+                            <input id="openclawCronRunIdInput" class="text-input" style="max-width:260px;" placeholder="要运行的 cron job id" aria-label="要运行的 cron job id" />
+                            <button class="btn btn-outline btn-small" onclick="previewCronRun()">预览运行</button>
+                            <button class="btn btn-outline btn-small" onclick="requestCronRunToken()">生成确认令牌</button>
+                            <button class="btn btn-danger btn-small" onclick="executeCronRun()">执行运行</button>
+                        </div>
+                        <div id="openclawCronRunResult" class="status-subtext" style="margin-bottom: 12px;">手动运行默认关闭，需开启服务端 feature flag。</div>
+                        <div id="openclawCronOverview" class="status-subtext">等待加载。</div>
+                    </div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">浏览器只读观测</h2>
+                    <div class="status-subtext">只读调用 browser GET /、/profiles、/tabs；Snapshot 仅点击按钮时加载。</div>
+                </div>
+                <div class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>浏览器概览</h3>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button class="btn btn-outline btn-small" onclick="fetchOpenClawBrowserOverview(false)">刷新浏览器</button>
+                                <button class="btn btn-outline btn-small" onclick="fetchOpenClawBrowserOverview(true)">加载 Snapshot</button>
+                            </div>
+                        </div>
+                        <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
+                            <input id="openclawNavigateUrlInput" class="text-input" style="max-width:320px;" placeholder="导航 URL，如 https://example.com 或 about:blank" aria-label="导航 URL" />
+                            <button class="btn btn-outline btn-small" onclick="previewBrowserNavigate()">预览导航</button>
+                            <button class="btn btn-outline btn-small" onclick="requestBrowserNavigateToken()">生成确认令牌</button>
+                            <button class="btn btn-danger btn-small" onclick="executeBrowserNavigate()">执行导航</button>
+                        </div>
+                        <div id="openclawNavigateResult" class="status-subtext" style="margin-bottom: 12px;">浏览器导航默认关闭，需开启服务端 feature flag。</div>
+                        <div id="openclawBrowserOverview" class="status-subtext">等待加载。</div>
+                    </div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">配置 / 智能体文件只读查看</h2>
+                    <div class="status-subtext">只读调用 config.get / config.schema / agents.files.list / agents.files.get，不执行任何写入。</div>
+                </div>
+                <div class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>配置与文件概览</h3>
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawConfigFilesOverview()">刷新配置/文件</button>
+                        </div>
+                        <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
+                            <input id="openclawAgentIdInput" class="text-input" style="max-width:150px;" value="main" aria-label="Agent ID" />
+                            <input id="openclawFileNameInput" class="text-input" style="max-width:210px;" placeholder="文件名，如 AGENTS.md" aria-label="Agent file name" />
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawConfigFilesOverview()">读取文件</button>
+                        </div>
+                        <div id="openclawConfigFilesOverview" class="status-subtext">等待加载。</div>
+                    </div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">备份元数据 / 差异预览</h2>
+                    <div class="status-subtext">只读取当前配置或文件，生成脱敏摘要与哈希；不保存明文备份，不执行写入。</div>
+                </div>
+                <div class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>写入前预览</h3>
+                            <button class="btn btn-outline btn-small" onclick="previewOpenClawBackupDiff()">生成差异预览</button>
+                        </div>
+                        <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
+                            <select id="openclawBackupTargetSelect" class="text-input" style="max-width:150px;">
+                                <option value="config">配置</option>
+                                <option value="agent_file">智能体文件</option>
+                            </select>
+                            <input id="openclawBackupAgentIdInput" class="text-input" style="max-width:130px;" value="main" aria-label="智能体 ID" />
+                            <input id="openclawBackupFileNameInput" class="text-input" style="max-width:180px;" placeholder="文件名，如 AGENTS.md" aria-label="智能体文件名" />
+                        </div>
+                        <textarea id="openclawProposedContentInput" class="form-control" style="min-height:120px;" placeholder="在这里粘贴拟写入的新内容；当前阶段只做差异预览，不会写入。"></textarea>
+                        <div id="openclawBackupDiffPreview" class="status-subtext" style="margin-top: 12px;">等待生成差异预览。</div>
+                    </div>
+                </div>
+                <div style="margin-top: 22px;">
+                    <h2 style="margin: 0; font-size: 18px;">受控写入安全底座</h2>
+                    <div class="status-subtext">默认关闭所有写入；这里只展示 feature flag、dry-run preview 和审计记录。</div>
+                </div>
+                <div class="diagnostics-grid">
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>写入安全状态</h3>
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawMutationSafety()">刷新安全状态</button>
+                        </div>
+                        <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
+                            <select id="openclawMutationActionSelect" class="text-input" style="max-width:220px;">
+                                <option value="sessions.compact">sessions.compact</option>
+                                <option value="cron.run">cron.run</option>
+                                <option value="browser.navigate">browser.navigate</option>
+                                <option value="config.patch">config.patch</option>
+                                <option value="agents.files.set">agents.files.set</option>
+                            </select>
+                            <button class="btn btn-outline btn-small" onclick="previewOpenClawMutation()">生成演练预览</button>
+                        </div>
+                        <div id="openclawMutationSafety" class="status-subtext">等待加载。</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 错误 Tab -->
+        <div id="tabPanel-errors" class="tab-panel hidden">
+            <div class="glass-card">
+                <div class="flex-between">
+                    <h2 style="margin: 0; font-size: 18px;">最近错误</h2>
+                    <button class="btn btn-outline" onclick="fetchErrors()">刷新错误</button>
+                </div>
+                <div id="errorsList" class="empty-state">尚未加载。</div>
             </div>
         </div>
     </div>
@@ -447,6 +820,28 @@
         let webAuthEnabled = false;
         let webAuthReady = false;
         let preferredUsername = 'admin';
+        let currentTab = 'overview';
+        let knownUsers = [];
+        let openclawLoaded = false;
+        let openclawIncludeSnapshot = false;
+        let lastSessionsCompactToken = '';
+        let lastSessionsCompactKey = '';
+        let lastCronRunToken = '';
+        let lastCronRunId = '';
+        let lastBrowserNavigateToken = '';
+        let lastBrowserNavigateUrl = '';
+
+        const diagnosticSectionNames = ['health', 'status', 'usage', 'models', 'tools', 'sessions', 'cron', 'browser'];
+        const diagnosticSectionLabels = {
+            health: '健康',
+            status: '状态',
+            usage: '用量',
+            models: '模型',
+            tools: '工具',
+            sessions: '会话',
+            cron: '定时任务',
+            browser: '浏览器'
+        };
 
         function showToast(msg, type='success') {
             const el = document.getElementById('toast');
@@ -458,6 +853,27 @@
         function setShellVisibility(showApp) {
             document.getElementById('appShell').classList.toggle('hidden', !showApp);
             document.getElementById('authShell').classList.toggle('hidden', showApp);
+        }
+
+        function switchTab(tabName) {
+            currentTab = tabName;
+            ['overview', 'users', 'openclaw', 'errors'].forEach(name => {
+                document.getElementById(`tabBtn-${name}`).classList.toggle('active', name === tabName);
+                document.getElementById(`tabPanel-${name}`).classList.toggle('hidden', name !== tabName);
+            });
+            if (tabName === 'openclaw' && !openclawLoaded) {
+                fetchOpenClawDiagnostics(false);
+            } else if (tabName === 'openclaw') {
+                fetchOpenClawObservability();
+                fetchOpenClawSessionsOverview();
+                fetchOpenClawCronOverview();
+                fetchOpenClawBrowserOverview(false);
+                fetchOpenClawConfigFilesOverview();
+                fetchOpenClawMutationSafety();
+            }
+            if (tabName === 'errors') {
+                fetchErrors();
+            }
         }
 
         function applyAuthBadges(session) {
@@ -509,6 +925,7 @@
             statusInterval = setInterval(() => {
                 if (webAuthReady || !webAuthEnabled) {
                     fetchStatus();
+                    fetchRequestNodes();
                 }
             }, 3000);
         }
@@ -543,6 +960,8 @@
                 const res = await apiFetch('/api/users/list');
                 const data = await res.json();
                 const tbody = document.getElementById('usersBody');
+                knownUsers = data.users || [];
+                renderOpenClawUidOptions();
                 
                 if (data.users && data.users.length > 0) {
                     tbody.innerHTML = data.users.map(u => `
@@ -670,8 +1089,909 @@
             }
         }
 
+        function renderOpenClawUidOptions(selectedUid) {
+            const select = document.getElementById('openclawUidSelect');
+            if (!select) return;
+            const current = selectedUid || select.value;
+            if (!knownUsers.length) {
+                select.innerHTML = '<option value="">无可用用户</option>';
+                return;
+            }
+            select.innerHTML = knownUsers.map(u => {
+                const label = `${u.userId}${u.name ? ' · ' + u.name : ''}`;
+                return `<option value="${escapeHtml(u.userId)}">${escapeHtml(label)}</option>`;
+            }).join('');
+            if (current && knownUsers.some(u => String(u.userId) === String(current))) {
+                select.value = current;
+            }
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }
+
+        function formatDuration(ms) {
+            const value = Number(ms || 0);
+            if (value >= 1000) return (value / 1000).toFixed(1) + 's';
+            return Math.round(value) + 'ms';
+        }
+
+        function formatTs(ts) {
+            if (!ts) return '-';
+            const d = new Date(Number(ts) * 1000);
+            return d.toLocaleTimeString();
+        }
+
+        function shortReqId(item) {
+            const gw = String(item.gateway_request_id || '');
+            const node = String(item.node_request_id || '');
+            const gwShort = gw ? gw.slice(0, 15) : '-';
+            const nodeShort = node ? node.slice(0, 8) : '-';
+            return `${escapeHtml(gwShort)}<div class="status-subtext">${escapeHtml(nodeShort)}</div>`;
+        }
+
+        async function fetchRequestNodes() {
+            if (webAuthEnabled && !webAuthReady) return;
+            try {
+                const res = await apiFetch('/api/requests/active');
+                const data = await res.json();
+                const active = data.active_requests || [];
+                const recent = data.recent_dispatches || [];
+                const activeBody = document.getElementById('activeRequestsBody');
+                const recentBody = document.getElementById('recentDispatchesBody');
+                const badge = document.getElementById('activeRequestsBadge');
+                const summary = document.getElementById('requestNodesSummary');
+
+                badge.textContent = `活跃 ${active.length}`;
+                summary.textContent = `当前活跃请求 ${active.length} 个，最近记录 ${recent.length} 条；仅展示 UID、地址和请求元数据，不显示正文或密钥。`;
+
+                if (!active.length) {
+                    activeBody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无活跃请求</td></tr>';
+                } else {
+                    activeBody.innerHTML = active.map(item => `
+                        <tr>
+                            <td>${shortReqId(item)}</td>
+                            <td>${escapeHtml(item.route || '-')}</td>
+                            <td>${escapeHtml(item.model || '-')}</td>
+                            <td>${escapeHtml(item.stream === null || item.stream === undefined ? '-' : String(item.stream))}</td>
+                            <td>${escapeHtml(item.node_uid || '(legacy)')}</td>
+                            <td>${escapeHtml(item.node_addr || '-')}</td>
+                            <td>${escapeHtml(formatDuration(item.elapsed_ms))}</td>
+                            <td>${escapeHtml(item.attempt || '-')}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                if (!recent.length) {
+                    recentBody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无最近请求</td></tr>';
+                } else {
+                    recentBody.innerHTML = recent.slice(0, 20).map(item => `
+                        <tr>
+                            <td>${shortReqId(item)}</td>
+                            <td>${escapeHtml(item.route || '-')}</td>
+                            <td>${escapeHtml(item.model || '-')}</td>
+                            <td>${escapeHtml((item.node_uid ? item.node_uid + '@' : '') + (item.node_addr || '-'))}</td>
+                            <td>${escapeHtml(item.status_code === null || item.status_code === undefined ? '-' : item.status_code)}</td>
+                            <td>${escapeHtml(item.end_reason || '-')}</td>
+                            <td>${escapeHtml(formatDuration(item.elapsed_ms))}</td>
+                            <td>${escapeHtml(formatTs(item.finished_at || item.started_at))}</td>
+                        </tr>
+                    `).join('');
+                }
+            } catch (e) {
+                if (e.message === 'UNAUTHORIZED') return;
+                document.getElementById('requestNodesSummary').textContent = '请求节点观测加载失败';
+            }
+        }
+
+        function summarizeDiagnosticPayload(section, payload) {
+            if (!payload || typeof payload !== 'object') return [String(payload ?? '(empty)')];
+            const lines = [];
+            const add = (label, value) => {
+                if (value !== undefined && value !== null && value !== '') lines.push(`<strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}`);
+            };
+
+            if (section === 'health' || section === 'status') {
+                ['status', 'state', 'ok', 'version', 'protocol', 'uptime', 'uptimeMs', 'server'].forEach(k => add(k, formatSummaryValue(payload[k])));
+            } else if (section === 'usage') {
+                add('status keys', Object.keys(payload.status || {}).join(', ') || '-');
+                add('cost keys', Object.keys(payload.cost || {}).join(', ') || '-');
+            } else if (section === 'models') {
+                add('model count', countListLike(payload.models || payload.data || payload));
+                add('keys', Object.keys(payload).slice(0, 8).join(', '));
+            } else if (section === 'tools') {
+                add('tool count', countListLike(payload.tools || payload.catalog || payload));
+                add('keys', Object.keys(payload).slice(0, 8).join(', '));
+            } else if (section === 'sessions') {
+                add('sessions', countListLike(payload.sessions || payload));
+                add('keys', Object.keys(payload).slice(0, 8).join(', '));
+            } else if (section === 'cron') {
+                add('status keys', Object.keys(payload.status || {}).join(', ') || '-');
+                add('jobs', countListLike(payload.list?.jobs || payload.list || {}));
+                add('runs', countListLike(payload.runs?.runs || payload.runs || {}));
+            } else if (section === 'browser') {
+                add('paths', Object.keys(payload).join(', '));
+                add('snapshot', payload['/snapshot'] ? 'loaded' : 'not loaded');
+            }
+            return lines.length ? lines : Object.keys(payload).slice(0, 8).map(k => `<strong>${escapeHtml(k)}:</strong> ${escapeHtml(formatSummaryValue(payload[k]))}`);
+        }
+
+        function formatSummaryValue(value) {
+            if (value === undefined || value === null) return '';
+            if (typeof value === 'object') {
+                if (Array.isArray(value)) return `array(${value.length})`;
+                if (value.type === 'list' && typeof value.len === 'number') return `list(${value.len})`;
+                return `object(${Object.keys(value).length})`;
+            }
+            return String(value);
+        }
+
+        function countListLike(value) {
+            if (Array.isArray(value)) return value.length;
+            if (value && typeof value === 'object' && value.type === 'list' && typeof value.len === 'number') return value.len;
+            if (value && typeof value === 'object') return Object.keys(value).length;
+            return 0;
+        }
+
+        function renderDiagnosticsCards(payload) {
+            const cards = document.getElementById('openclawCards');
+            const sections = payload.sections || {};
+            cards.innerHTML = diagnosticSectionNames.map(section => {
+                const result = sections[section];
+                if (!result) {
+                    return `
+                        <div class="diagnostic-card" data-section="${section}">
+                            <div class="diagnostic-card-head"><h3>${diagnosticSectionLabels[section] || section}</h3><span class="section-badge error">缺失</span></div>
+                            <div class="status-subtext">未请求或无返回。</div>
+                        </div>
+                    `;
+                }
+                if (!result.ok) {
+                    return `
+                        <div class="diagnostic-card" data-section="${section}">
+                            <div class="diagnostic-card-head"><h3>${diagnosticSectionLabels[section] || section}</h3><span class="section-badge error">错误</span></div>
+                            <div class="warning-box" style="margin-top:0;">${escapeHtml(result.error || 'section failed')}</div>
+                        </div>
+                    `;
+                }
+                const summary = summarizeDiagnosticPayload(section, result.payload).map(line => `<li>${line}</li>`).join('');
+                return `
+                    <div class="diagnostic-card" data-section="${section}">
+                        <div class="diagnostic-card-head"><h3>${diagnosticSectionLabels[section] || section}</h3><span class="section-badge">正常</span></div>
+                        <ul class="summary-list">${summary}</ul>
+                        <details class="json-details">
+                            <summary>JSON 摘要</summary>
+                            <pre class="json-block">${escapeHtml(JSON.stringify(result.payload, null, 2))}</pre>
+                        </details>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderOpenClawWarning(payload) {
+            const warning = document.getElementById('openclawWarning');
+            const globalErrors = (payload.errors || []).filter(e => !e.section);
+            if (!payload.ok || globalErrors.length) {
+                warning.classList.remove('hidden');
+                warning.textContent = globalErrors.length
+                    ? globalErrors.map(e => e.message || JSON.stringify(e)).join('；')
+                    : 'OpenClaw diagnostics returned ok=false';
+            } else {
+                warning.classList.add('hidden');
+                warning.textContent = '';
+            }
+        }
+
+        async function fetchOpenClawDiagnostics(forceRefresh = false) {
+            if (webAuthEnabled && !webAuthReady) return;
+            const select = document.getElementById('openclawUidSelect');
+            const uid = select.value || '';
+            const params = new URLSearchParams();
+            if (uid) params.set('uid', uid);
+            if (forceRefresh) params.set('refresh', 'true');
+            if (openclawIncludeSnapshot) params.set('include_snapshot', 'true');
+            params.set('sections', diagnosticSectionNames.join(','));
+
+            document.getElementById('openclawRefreshBtn').disabled = true;
+            try {
+                const res = await apiFetch(`/api/openclaw/diagnostics?${params.toString()}`);
+                const payload = await res.json();
+                openclawLoaded = true;
+                if (payload.selected_uid) {
+                    renderOpenClawUidOptions(payload.selected_uid);
+                }
+                document.getElementById('openclawCacheBadge').textContent = payload.cache?.hit ? '缓存：命中' : '缓存：未命中';
+                document.getElementById('openclawUpdatedAt').textContent = payload.generated_at
+                    ? `最近更新：${new Date(payload.generated_at * 1000).toLocaleString()}`
+                    : '最近更新：-';
+                renderOpenClawWarning(payload);
+                renderDiagnosticsCards(payload);
+                fetchOpenClawObservability();
+                fetchOpenClawSessionsOverview();
+                fetchOpenClawCronOverview();
+                fetchOpenClawBrowserOverview(false);
+                fetchOpenClawConfigFilesOverview();
+                fetchOpenClawMutationSafety();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawWarning').classList.remove('hidden');
+                    document.getElementById('openclawWarning').textContent = 'OpenClaw 诊断请求失败';
+                }
+            } finally {
+                document.getElementById('openclawRefreshBtn').disabled = false;
+            }
+        }
+
+        function renderOpenClawObservability(payload) {
+            const featureEl = document.getElementById('openclawFeatureMatrix');
+            const runsEl = document.getElementById('openclawAgentRuns');
+            const byUid = payload.features?.by_uid || {};
+            const uidRows = Object.entries(byUid);
+            if (!uidRows.length) {
+                featureEl.innerHTML = '暂无 hello-ok feature 采集；等待 OpenClaw WS 建联后自动出现。';
+            } else {
+                featureEl.innerHTML = uidRows.map(([uid, info]) => {
+                    const categories = info.method_categories || {};
+                    const categoryText = Object.entries(categories).slice(0, 8).map(([k, v]) => `${k}:${v}`).join(' · ');
+                    const methods = info.methods?.sample ? info.methods.sample.join(', ') : '';
+                    return `
+                        <div style="margin-bottom:10px;">
+                            <strong style="color:var(--primary)">${escapeHtml(uid)}</strong>
+                            <div>协议=${escapeHtml(info.protocol || '-')} · 服务端=${escapeHtml(info.server_version || '-')} · 方法=${escapeHtml(info.method_count || 0)} · 事件=${escapeHtml(info.event_count || 0)}</div>
+                            <div class="status-subtext">${escapeHtml(categoryText || 'no categories')}</div>
+                            <details class="json-details">
+                                <summary>方法样例</summary>
+                                <pre class="json-block">${escapeHtml(methods || '(empty)')}</pre>
+                            </details>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            const runs = payload.agent_runs?.runs?.sample || [];
+            if (!runs.length) {
+                runsEl.innerHTML = '暂无 agent run 摘要。';
+            } else {
+                const rows = runs.map(run => `
+                    <tr>
+                        <td>${escapeHtml(run.uid || '-')}</td>
+                        <td>${escapeHtml(run.status || '-')}</td>
+                        <td>${run.tool_seen ? 'yes' : 'no'}</td>
+                        <td>${escapeHtml(run.tool_event_count ?? 0)}</td>
+                        <td>${escapeHtml(run.duration_ms ?? '-')}</td>
+                    </tr>
+                `).join('');
+                runsEl.innerHTML = `
+                    <div class="status-subtext" style="margin-bottom:8px;">状态统计：${escapeHtml(JSON.stringify(payload.agent_runs?.status_counts || {}))}</div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead><tr><th>UID</th><th>状态</th><th>工具</th><th>工具事件</th><th>耗时 ms</th></tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                `;
+            }
+        }
+
+        async function fetchOpenClawObservability() {
+            if (webAuthEnabled && !webAuthReady) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            const params = new URLSearchParams({ limit: '30' });
+            if (uid) params.set('uid', uid);
+            try {
+                const res = await apiFetch(`/api/openclaw/observability?${params.toString()}`);
+                const payload = await res.json();
+                renderOpenClawObservability(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawFeatureMatrix').textContent = '观测信息请求失败';
+                    document.getElementById('openclawAgentRuns').textContent = '观测信息请求失败';
+                }
+            }
+        }
+
+        function renderOpenClawSessionsOverview(payload) {
+            const el = document.getElementById('openclawSessionsOverview');
+            if (!payload.ok) {
+                const errors = payload.errors || [];
+                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Sessions overview failed')}</div>`;
+                return;
+            }
+            const sessions = payload.sessions || {};
+            const preview = payload.preview || {};
+            const keys = sessions.keys?.sample || [];
+            const keyItems = keys.length ? keys.map(k => `<li>${escapeHtml(k)}</li>`).join('') : '<li>暂无 session key</li>';
+            el.innerHTML = `
+                <ul class="summary-list">
+                    <li><strong>UID:</strong> ${escapeHtml(payload.selected_uid || '-')}</li>
+                    <li><strong>会话数:</strong> ${escapeHtml(sessions.count ?? 0)}</li>
+                    <li><strong>预览:</strong> ${preview.ok ? '正常' : escapeHtml(preview.error || '已关闭')}</li>
+                </ul>
+                <details class="json-details">
+                    <summary>会话 Key</summary>
+                    <ul class="summary-list" style="margin-top:8px;">${keyItems}</ul>
+                </details>
+                <details class="json-details">
+                    <summary>sessions.list 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(sessions.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>sessions.preview 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(preview.payload || preview, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function fetchOpenClawSessionsOverview() {
+            if (webAuthEnabled && !webAuthReady) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            const params = new URLSearchParams({ limit: '40', include_preview: 'true' });
+            if (uid) params.set('uid', uid);
+            try {
+                const res = await apiFetch(`/api/openclaw/sessions/overview?${params.toString()}`);
+                const payload = await res.json();
+                renderOpenClawSessionsOverview(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawSessionsOverview').textContent = '会话概览请求失败';
+                }
+            }
+        }
+
+        function setCompactResult(payload) {
+            const el = document.getElementById('openclawCompactResult');
+            el.innerHTML = `<details class="json-details" open><summary>会话压缩结果</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+        }
+
+        function getCompactKey() {
+            return document.getElementById('openclawCompactKeyInput').value.trim();
+        }
+
+        async function previewSessionsCompact() {
+            const key = getCompactKey();
+            if (!key) {
+                showToast('请先填写 session key', 'error');
+                return;
+            }
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/preview', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'sessions.compact', uid, params: { key } })
+                });
+                const payload = await res.json();
+                setCompactResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('压缩预览失败', 'error');
+            }
+        }
+
+        async function requestSessionsCompactToken() {
+            const key = getCompactKey();
+            if (!key) {
+                showToast('请先填写 session key', 'error');
+                return;
+            }
+            if (!confirm('确认要为 sessions.compact 生成一次性确认令牌吗？如果服务端未开启 feature flag，此操作会被拒绝。')) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/confirmation-token', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'sessions.compact', uid, params: { key } })
+                });
+                const payload = await res.json();
+                if (payload.ok && payload.token) {
+                    lastSessionsCompactToken = payload.token;
+                    lastSessionsCompactKey = key;
+                    showToast('确认令牌已生成');
+                }
+                setCompactResult({...payload, token: payload.token ? '<已生成，前端已暂存>' : ''});
+                await fetchOpenClawMutationSafety(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
+            }
+        }
+
+        async function executeSessionsCompact() {
+            const key = getCompactKey();
+            if (!key) {
+                showToast('请先填写 session key', 'error');
+                return;
+            }
+            if (!lastSessionsCompactToken || lastSessionsCompactKey !== key) {
+                showToast('请先为当前 session key 生成确认令牌', 'error');
+                return;
+            }
+            if (!confirm(`最终确认：执行 sessions.compact？\nUID: ${document.getElementById('openclawUidSelect').value || '(默认)'}\nKey: ${key}`)) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/sessions/compact', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ uid, key, confirmation_token: lastSessionsCompactToken })
+                });
+                const payload = await res.json();
+                lastSessionsCompactToken = '';
+                lastSessionsCompactKey = '';
+                setCompactResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+                await fetchOpenClawSessionsOverview();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('执行 sessions.compact 失败', 'error');
+            }
+        }
+
+        function setCronRunResult(payload) {
+            const el = document.getElementById('openclawCronRunResult');
+            el.innerHTML = `<details class="json-details" open><summary>定时任务运行结果</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+        }
+
+        function getCronRunId() {
+            return document.getElementById('openclawCronRunIdInput').value.trim();
+        }
+
+        async function previewCronRun() {
+            const id = getCronRunId();
+            if (!id) {
+                showToast('请先填写 cron job id', 'error');
+                return;
+            }
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/preview', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'cron.run', uid, params: { id } })
+                });
+                const payload = await res.json();
+                setCronRunResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('运行预览失败', 'error');
+            }
+        }
+
+        async function requestCronRunToken() {
+            const id = getCronRunId();
+            if (!id) {
+                showToast('请先填写 cron job id', 'error');
+                return;
+            }
+            if (!confirm('确认要为 cron.run 生成一次性确认令牌吗？如果服务端未开启 feature flag，此操作会被拒绝。')) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/confirmation-token', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'cron.run', uid, params: { id } })
+                });
+                const payload = await res.json();
+                if (payload.ok && payload.token) {
+                    lastCronRunToken = payload.token;
+                    lastCronRunId = id;
+                    showToast('确认令牌已生成');
+                }
+                setCronRunResult({...payload, token: payload.token ? '<已生成，前端已暂存>' : ''});
+                await fetchOpenClawMutationSafety(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
+            }
+        }
+
+        async function executeCronRun() {
+            const id = getCronRunId();
+            if (!id) {
+                showToast('请先填写 cron job id', 'error');
+                return;
+            }
+            if (!lastCronRunToken || lastCronRunId !== id) {
+                showToast('请先为当前 cron job id 生成确认令牌', 'error');
+                return;
+            }
+            if (!confirm(`最终确认：执行 cron.run？\nUID: ${document.getElementById('openclawUidSelect').value || '(默认)'}\nJob ID: ${id}`)) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/cron/run', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ uid, id, confirmation_token: lastCronRunToken })
+                });
+                const payload = await res.json();
+                lastCronRunToken = '';
+                lastCronRunId = '';
+                setCronRunResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+                await fetchOpenClawCronOverview();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('执行 cron.run 失败', 'error');
+            }
+        }
+
+        function setNavigateResult(payload) {
+            const el = document.getElementById('openclawNavigateResult');
+            el.innerHTML = `<details class="json-details" open><summary>浏览器导航结果</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+        }
+
+        function getNavigateUrl() {
+            return document.getElementById('openclawNavigateUrlInput').value.trim();
+        }
+
+        async function previewBrowserNavigate() {
+            const url = getNavigateUrl();
+            if (!url) {
+                showToast('请先填写导航 URL', 'error');
+                return;
+            }
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/preview', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'browser.navigate', uid, params: { url } })
+                });
+                const payload = await res.json();
+                setNavigateResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('导航预览失败', 'error');
+            }
+        }
+
+        async function requestBrowserNavigateToken() {
+            const url = getNavigateUrl();
+            if (!url) {
+                showToast('请先填写导航 URL', 'error');
+                return;
+            }
+            if (!confirm('确认要为 browser.navigate 生成一次性确认令牌吗？仅允许 http/https/about:blank。')) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/confirmation-token', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action: 'browser.navigate', uid, params: { url } })
+                });
+                const payload = await res.json();
+                if (payload.ok && payload.token) {
+                    lastBrowserNavigateToken = payload.token;
+                    lastBrowserNavigateUrl = url;
+                    showToast('确认令牌已生成');
+                }
+                setNavigateResult({...payload, token: payload.token ? '<已生成，前端已暂存>' : ''});
+                await fetchOpenClawMutationSafety(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
+            }
+        }
+
+        async function executeBrowserNavigate() {
+            const url = getNavigateUrl();
+            if (!url) {
+                showToast('请先填写导航 URL', 'error');
+                return;
+            }
+            if (!lastBrowserNavigateToken || lastBrowserNavigateUrl !== url) {
+                showToast('请先为当前导航 URL 生成确认令牌', 'error');
+                return;
+            }
+            if (!confirm(`最终确认：执行 browser.navigate？\nUID: ${document.getElementById('openclawUidSelect').value || '(默认)'}\nURL: ${url}`)) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/browser/navigate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ uid, url, confirmation_token: lastBrowserNavigateToken })
+                });
+                const payload = await res.json();
+                lastBrowserNavigateToken = '';
+                lastBrowserNavigateUrl = '';
+                setNavigateResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+                await fetchOpenClawBrowserOverview(false);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('执行 browser.navigate 失败', 'error');
+            }
+        }
+
+        function renderOpenClawCronOverview(payload) {
+            const el = document.getElementById('openclawCronOverview');
+            if (!payload.ok) {
+                const errors = payload.errors || [];
+                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Cron overview failed')}</div>`;
+                return;
+            }
+            const summary = payload.summary || {};
+            const cron = payload.cron || {};
+            el.innerHTML = `
+                <ul class="summary-list">
+                    <li><strong>UID:</strong> ${escapeHtml(payload.selected_uid || '-')}</li>
+                    <li><strong>任务数:</strong> ${escapeHtml(summary.job_count ?? 0)}</li>
+                    <li><strong>运行次数:</strong> ${escapeHtml(summary.run_count ?? 0)}</li>
+                    <li><strong>运行状态:</strong> ${escapeHtml(JSON.stringify(summary.run_status_counts || {}))}</li>
+                </ul>
+                <details class="json-details">
+                    <summary>cron.status 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(cron.status?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>cron.list 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(cron.list?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>cron.runs 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(cron.runs?.payload || {}, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function fetchOpenClawCronOverview() {
+            if (webAuthEnabled && !webAuthReady) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            const params = new URLSearchParams();
+            if (uid) params.set('uid', uid);
+            try {
+                const res = await apiFetch(`/api/openclaw/cron/overview?${params.toString()}`);
+                const payload = await res.json();
+                renderOpenClawCronOverview(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawCronOverview').textContent = '定时任务概览请求失败';
+                }
+            }
+        }
+
+        function renderOpenClawBrowserOverview(payload) {
+            const el = document.getElementById('openclawBrowserOverview');
+            if (!payload.ok) {
+                const errors = payload.errors || [];
+                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Browser overview failed')}</div>`;
+                return;
+            }
+            const summary = payload.summary || {};
+            const browser = payload.browser || {};
+            const snapshot = browser.snapshot;
+            el.innerHTML = `
+                <ul class="summary-list">
+                    <li><strong>UID:</strong> ${escapeHtml(payload.selected_uid || '-')}</li>
+                    <li><strong>配置档:</strong> ${escapeHtml(summary.profile_count ?? 0)}</li>
+                    <li><strong>标签页:</strong> ${escapeHtml(summary.tab_count ?? 0)}</li>
+                    <li><strong>快照:</strong> ${summary.snapshot_loaded ? '已加载' : '未加载'}</li>
+                </ul>
+                <details class="json-details">
+                    <summary>GET / 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(browser.root?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>GET /profiles 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(browser.profiles?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>GET /tabs 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(browser.tabs?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>GET /snapshot 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(snapshot?.payload || snapshot || {message: 'snapshot not loaded'}, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function fetchOpenClawBrowserOverview(includeSnapshot = false) {
+            if (webAuthEnabled && !webAuthReady) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            const params = new URLSearchParams();
+            if (uid) params.set('uid', uid);
+            if (includeSnapshot) params.set('include_snapshot', 'true');
+            try {
+                const res = await apiFetch(`/api/openclaw/browser/overview?${params.toString()}`);
+                const payload = await res.json();
+                renderOpenClawBrowserOverview(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawBrowserOverview').textContent = '浏览器概览请求失败';
+                }
+            }
+        }
+
+        function renderOpenClawConfigFilesOverview(payload) {
+            const el = document.getElementById('openclawConfigFilesOverview');
+            if (!payload.ok) {
+                const errors = payload.errors || [];
+                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Config/files overview failed')}</div>`;
+                return;
+            }
+            const summary = payload.summary || {};
+            const config = payload.config || {};
+            const files = payload.agent_files || {};
+            el.innerHTML = `
+                <ul class="summary-list">
+                    <li><strong>UID:</strong> ${escapeHtml(payload.selected_uid || '-')}</li>
+                    <li><strong>智能体:</strong> ${escapeHtml(payload.requested?.agent_id || 'main')}</li>
+                    <li><strong>文件数:</strong> ${escapeHtml(summary.file_count ?? 0)}</li>
+                    <li><strong>已加载文件:</strong> ${summary.file_loaded ? escapeHtml(payload.requested?.file_name || '-') : '无'}</li>
+                </ul>
+                <details class="json-details">
+                    <summary>config.get 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(config.get?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>config.schema 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(config.schema?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>agents.files.list 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(files.list?.payload || {}, null, 2))}</pre>
+                </details>
+                <details class="json-details">
+                    <summary>agents.files.get 摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(files.get?.payload || {message: 'no file loaded'}, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function fetchOpenClawConfigFilesOverview() {
+            if (webAuthEnabled && !webAuthReady) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            const agentId = document.getElementById('openclawAgentIdInput').value.trim() || 'main';
+            const fileName = document.getElementById('openclawFileNameInput').value.trim();
+            const params = new URLSearchParams({ agent_id: agentId });
+            if (uid) params.set('uid', uid);
+            if (fileName) params.set('file_name', fileName);
+            try {
+                const res = await apiFetch(`/api/openclaw/config-files/overview?${params.toString()}`);
+                const payload = await res.json();
+                renderOpenClawConfigFilesOverview(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawConfigFilesOverview').textContent = '配置/文件概览请求失败';
+                }
+            }
+        }
+
+        function renderOpenClawBackupDiffPreview(payload) {
+            const el = document.getElementById('openclawBackupDiffPreview');
+            if (!payload.ok) {
+                const errors = payload.errors || [];
+                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || '差异预览失败')}</div>`;
+                return;
+            }
+            const diff = payload.diff || {};
+            el.innerHTML = `
+                <ul class="summary-list">
+                    <li><strong>UID:</strong> ${escapeHtml(payload.selected_uid || '-')}</li>
+                    <li><strong>目标:</strong> ${escapeHtml(JSON.stringify(payload.target || {}))}</li>
+                    <li><strong>已变化:</strong> ${diff.changed ? '是' : '否'}</li>
+                    <li><strong>字符变化:</strong> ${escapeHtml(diff.delta?.chars ?? 0)}</li>
+                    <li><strong>行数变化:</strong> ${escapeHtml(diff.delta?.lines ?? 0)}</li>
+                    <li><strong>备份元数据 ID:</strong> ${escapeHtml(payload.backup?.id || '-')}</li>
+                </ul>
+                <details class="json-details" open>
+                    <summary>差异预览摘要</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function previewOpenClawBackupDiff() {
+            if (webAuthEnabled && !webAuthReady) return;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            const targetType = document.getElementById('openclawBackupTargetSelect').value;
+            const agentId = document.getElementById('openclawBackupAgentIdInput').value.trim() || 'main';
+            const fileName = document.getElementById('openclawBackupFileNameInput').value.trim();
+            const proposedContent = document.getElementById('openclawProposedContentInput').value;
+            if (targetType === 'agent_file' && !fileName) {
+                showToast('智能体文件预览需要填写文件名', 'error');
+                return;
+            }
+            try {
+                const res = await apiFetch('/api/openclaw/backup-diff/preview', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        uid,
+                        target_type: targetType,
+                        agent_id: agentId,
+                        file_name: fileName,
+                        proposed_content: proposedContent
+                    })
+                });
+                const payload = await res.json();
+                renderOpenClawBackupDiffPreview(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawBackupDiffPreview').textContent = '差异预览请求失败';
+                }
+            }
+        }
+
+        function renderOpenClawMutationSafety(payload, previewPayload) {
+            const el = document.getElementById('openclawMutationSafety');
+            const previewBlock = previewPayload ? `
+                <details class="json-details" open>
+                    <summary>演练预览</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(previewPayload, null, 2))}</pre>
+                </details>
+            ` : '';
+            el.innerHTML = `
+                <ul class="summary-list">
+                    <li><strong>写入已启用:</strong> ${payload.mutations_enabled ? '是' : '否'}</li>
+                    <li><strong>功能开关:</strong> ${escapeHtml(payload.feature_flag_env || '-')}</li>
+                    <li><strong>待确认令牌:</strong> ${escapeHtml(payload.pending_confirmation_count ?? 0)}</li>
+                    <li><strong>审计记录:</strong> ${escapeHtml(payload.audit_count ?? 0)}</li>
+                    <li><strong>支持动作:</strong> ${escapeHtml((payload.supported_actions || []).join(', '))}</li>
+                </ul>
+                <details class="json-details">
+                    <summary>安全状态 JSON</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+                </details>
+                ${previewBlock}
+            `;
+        }
+
+        async function fetchOpenClawMutationSafety(previewPayload) {
+            if (webAuthEnabled && !webAuthReady) return;
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/safety');
+                const payload = await res.json();
+                renderOpenClawMutationSafety(payload, previewPayload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawMutationSafety').textContent = '写入安全状态请求失败';
+                }
+            }
+        }
+
+        async function previewOpenClawMutation() {
+            if (webAuthEnabled && !webAuthReady) return;
+            const action = document.getElementById('openclawMutationActionSelect').value;
+            const uid = document.getElementById('openclawUidSelect').value || '';
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/preview', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ action, uid, params: { source: 'webui-dry-run' } })
+                });
+                const preview = await res.json();
+                await fetchOpenClawMutationSafety(preview);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawMutationSafety').textContent = '写入预览请求失败';
+                }
+            }
+        }
+
+        async function loadOpenClawSnapshot() {
+            openclawIncludeSnapshot = true;
+            await fetchOpenClawDiagnostics(true);
+        }
+
+        async function fetchErrors() {
+            try {
+                const res = await apiFetch('/api/errors?limit=50');
+                const data = await res.json();
+                const el = document.getElementById('errorsList');
+                if (!data.errors || !data.errors.length) {
+                    el.className = 'empty-state';
+                    el.innerHTML = '暂无错误。';
+                    return;
+                }
+                el.className = '';
+                el.innerHTML = `<pre class="json-block">${escapeHtml(JSON.stringify(data.errors, null, 2))}</pre>`;
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('加载错误列表失败', 'error');
+            }
+        }
+
         async function initializeDashboard() {
-            await Promise.all([fetchStatus(), fetchUsers()]);
+            await Promise.all([fetchStatus(), fetchRequestNodes(), fetchUsers()]);
             startStatusPolling();
         }
 

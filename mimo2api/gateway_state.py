@@ -24,11 +24,74 @@ class GatewayState:
         self.metrics_history_last_snapshot: Dict[str, Any] | None = None
         self.metrics: Dict[str, Any] = self._default_metrics()
         self.recent_errors: deque = deque(maxlen=500)
+        self.active_requests: Dict[str, Dict[str, Any]] = {}
+        self.recent_dispatches: deque = deque(maxlen=100)
         self.recent_agent_runs: deque = deque(maxlen=200)
         self.recent_openclaw_events: deque = deque(maxlen=1000)
         # uid -> sanitized hello-ok protocol feature summary from OpenClaw.
         self.openclaw_features_by_uid: Dict[str, Any] = {}
         self.manager_status: Dict[str, Any] = {}
+
+    def start_dispatch(self, record: Dict[str, Any]) -> None:
+        node_request_id = str(record.get("node_request_id") or record.get("req_id") or "")
+        if not node_request_id:
+            return
+        now = time.time()
+        clean_record = dict(record)
+        clean_record.setdefault("started_at", now)
+        clean_record.setdefault("first_byte_at", None)
+        clean_record.setdefault("finished_at", None)
+        clean_record.setdefault("status_code", None)
+        clean_record.setdefault("end_reason", "")
+        self.active_requests[node_request_id] = clean_record
+
+    def mark_dispatch_first_byte(self, node_request_id: str, status_code: int | None = None) -> None:
+        record = self.active_requests.get(node_request_id)
+        if not record:
+            return
+        record["first_byte_at"] = record.get("first_byte_at") or time.time()
+        if status_code is not None:
+            record["status_code"] = int(status_code)
+
+    def finish_dispatch(
+        self,
+        node_request_id: str,
+        *,
+        status_code: int | None = None,
+        end_reason: str = "finished",
+    ) -> Dict[str, Any] | None:
+        record = self.active_requests.pop(node_request_id, None)
+        if not record:
+            return None
+        finished_at = time.time()
+        record["finished_at"] = finished_at
+        if status_code is not None:
+            record["status_code"] = int(status_code)
+        record["end_reason"] = str(end_reason or "finished")[:120]
+        started_at = float(record.get("started_at") or finished_at)
+        record["elapsed_ms"] = round(max(0.0, finished_at - started_at) * 1000, 2)
+        self.recent_dispatches.append(record)
+        return record
+
+    def build_requests_snapshot(self) -> Dict[str, Any]:
+        now = time.time()
+
+        def with_elapsed(record: Dict[str, Any]) -> Dict[str, Any]:
+            item = dict(record)
+            started_at = float(item.get("started_at") or now)
+            finished_at = item.get("finished_at")
+            end_at = float(finished_at) if finished_at else now
+            item["elapsed_ms"] = round(max(0.0, end_at - started_at) * 1000, 2)
+            return item
+
+        active = [with_elapsed(item) for item in self.active_requests.values()]
+        active.sort(key=lambda item: float(item.get("started_at") or 0))
+        recent = [with_elapsed(item) for item in reversed(self.recent_dispatches)]
+        return {
+            "generated_at": int(now),
+            "active_requests": active,
+            "recent_dispatches": recent,
+        }
 
     @staticmethod
     def _default_metrics() -> Dict[str, Any]:

@@ -49,6 +49,21 @@ from .auth import (
 )
 from .config import get_env_bool, get_env_float, get_env_int
 from .openclaw_protocol import build_protocol_catalog
+from .openclaw_diagnostics import build_openclaw_diagnostics, sanitize_payload
+from .openclaw_sessions import build_openclaw_sessions_overview
+from .openclaw_cron import build_openclaw_cron_overview
+from .openclaw_browser import build_openclaw_browser_overview
+from .openclaw_config_files import build_openclaw_config_files_overview
+from .openclaw_mutation_safety import (
+    build_mutation_preview,
+    build_mutation_safety_status,
+    create_confirmation_token,
+    list_mutation_audit,
+)
+from .openclaw_session_mutations import execute_sessions_compact
+from .openclaw_cron_mutations import execute_cron_run
+from .openclaw_browser_mutations import execute_browser_navigate
+from .openclaw_backup_diff import build_openclaw_backup_diff_preview, list_backup_diff_records
 from .metrics_store import (
     METRICS_BUCKET_SECONDS,
     METRICS_DB_PATH,
@@ -233,6 +248,11 @@ RETRYABLE_STATUS_CODES = {401, 403, 429}
 NODE_RESPONSE_TIMEOUT = 30
 MAX_RETRIES = 3
 MAX_PENDING_QUEUES = 2000
+UPSTREAM_TRUNCATED_JSON_MARKERS = (
+    "unexpected end of data",
+    "unterminated string",
+    "eof while parsing",
+)
 AI_ROUTE_PREFIXES = ("/v1/", "/anthropic/v1/")
 WEBUI_PUBLIC_PATHS = {
     "/",
@@ -372,6 +392,68 @@ def record_error(
     })
 
 
+def build_openclaw_observability(uid: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """Build a read-only OpenClaw observability snapshot from in-memory summaries."""
+    selected_uid = str(uid or "").strip()
+    limit = max(1, min(limit, 200))
+
+    features_by_uid = dict(state.openclaw_features_by_uid)
+    if selected_uid:
+        features_by_uid = {
+            item_uid: payload
+            for item_uid, payload in features_by_uid.items()
+            if str(item_uid) == selected_uid
+        }
+
+    runs_source = list(state.recent_agent_runs)
+    if selected_uid:
+        runs_source = [run for run in runs_source if str(run.get("uid", "")) == selected_uid]
+    runs_source = runs_source[-limit:]
+    runs_source.reverse()
+
+    events_source = list(state.recent_openclaw_events)
+    if selected_uid:
+        events_source = [event for event in events_source if str(event.get("uid", "")) == selected_uid]
+    events_source = events_source[-limit:]
+    events_source.reverse()
+
+    run_status_counts: dict[str, int] = {}
+    for run in runs_source:
+        status = str(run.get("status") or "unknown")
+        run_status_counts[status] = run_status_counts.get(status, 0) + 1
+
+    event_counts: dict[str, int] = {}
+    stream_counts: dict[str, int] = {}
+    for event in events_source:
+        event_name = str(event.get("event") or "unknown")
+        event_counts[event_name] = event_counts.get(event_name, 0) + 1
+        stream = event.get("stream")
+        if stream:
+            stream_text = str(stream)
+            stream_counts[stream_text] = stream_counts.get(stream_text, 0) + 1
+
+    return {
+        "ok": True,
+        "generated_at": int(time.time()),
+        "filters": {"uid": selected_uid, "limit": limit},
+        "features": {
+            "count": len(features_by_uid),
+            "by_uid": sanitize_payload(features_by_uid),
+        },
+        "agent_runs": {
+            "count": len(runs_source),
+            "status_counts": run_status_counts,
+            "runs": sanitize_payload(runs_source),
+        },
+        "events": {
+            "count": len(events_source),
+            "event_counts": event_counts,
+            "stream_counts": stream_counts,
+            "events": sanitize_payload(events_source),
+        },
+    }
+
+
 def no_available_nodes_error() -> JSONResponse:
     """避免把“全部节点因上游 401 冷却”误报成单纯无节点。"""
     if not state.active_clients:
@@ -402,6 +484,47 @@ def no_available_nodes_error() -> JSONResponse:
             )
 
     return _json_error("没有可用的内网节点", 503)
+
+
+def new_gateway_request_id() -> str:
+    return f"gw_{uuid.uuid4().hex[:12]}"
+
+
+def node_addr(ws: WebSocket) -> str:
+    if not ws.client:
+        return "Unknown"
+    host = getattr(ws.client, "host", "Unknown")
+    port = getattr(ws.client, "port", None)
+    return f"{host}:{port}" if port is not None else str(host)
+
+
+def extract_request_metadata(body_text: str) -> tuple[str, bool | None]:
+    try:
+        payload = json.loads(body_text)
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return "", None
+    if not isinstance(payload, dict):
+        return "", None
+    model = payload.get("model")
+    stream = payload.get("stream")
+    return (str(model) if model is not None else "", bool(stream) if isinstance(stream, bool) else None)
+
+
+def finish_tracked_dispatch(req_id: str, *, status_code: int | None = None, end_reason: str = "cleanup") -> None:
+    record = state.finish_dispatch(req_id, status_code=status_code, end_reason=end_reason)
+    if not record:
+        return
+    logger.info(
+        "✅ 请求结束: "
+        f"gw={str(record.get('gateway_request_id', ''))[:16]} "
+        f"node_req={str(record.get('node_request_id', req_id))[:8]} "
+        f"route={record.get('route', '')} "
+        f"node={record.get('node_uid', '')}@{record.get('node_addr', '')} "
+        f"attempt={record.get('attempt', '')} "
+        f"status={record.get('status_code')} "
+        f"reason={record.get('end_reason')} "
+        f"elapsed_ms={record.get('elapsed_ms')}"
+    )
 
 
 def _is_compaction_trigger_request(req_body: dict[str, Any]) -> bool:
@@ -621,6 +744,10 @@ async def api_rebuild():
 async def api_stats():
     return JSONResponse(content=build_gateway_stats(len(_background_tasks)))
 
+@app.get("/api/requests/active")
+async def api_requests_active():
+    return JSONResponse(content=state.build_requests_snapshot())
+
 @app.get("/api/diagnostics/routes")
 async def api_diagnostics_routes():
     return JSONResponse(content=build_route_diagnostics())
@@ -652,6 +779,160 @@ async def api_agent_runs(limit: int = 50):
 async def api_openclaw_protocol():
     """Return the local OpenClaw protocol catalog and field dictionary."""
     return JSONResponse(content=build_protocol_catalog())
+
+@app.get("/api/openclaw/diagnostics")
+async def api_openclaw_diagnostics(
+    uid: str | None = None,
+    sections: str | None = None,
+    refresh: bool = False,
+    include_snapshot: bool = False,
+):
+    """Return a composite read-only OpenClaw diagnostics snapshot."""
+    return JSONResponse(content=await build_openclaw_diagnostics(
+        uid=uid,
+        sections=sections,
+        refresh=refresh,
+        include_snapshot=include_snapshot,
+    ))
+
+@app.get("/api/openclaw/observability")
+async def api_openclaw_observability(uid: str | None = None, limit: int = 50):
+    """Return read-only OpenClaw features, agent run, and event summaries."""
+    return JSONResponse(content=build_openclaw_observability(uid=uid, limit=limit))
+
+@app.get("/api/openclaw/sessions/overview")
+async def api_openclaw_sessions_overview(
+    uid: str | None = None,
+    limit: int = 50,
+    include_preview: bool = True,
+):
+    """Return read-only sessions.list and optional sessions.preview data."""
+    return JSONResponse(content=await build_openclaw_sessions_overview(
+        uid=uid,
+        limit=limit,
+        include_preview=include_preview,
+    ))
+
+@app.get("/api/openclaw/cron/overview")
+async def api_openclaw_cron_overview(uid: str | None = None):
+    """Return read-only cron.status/list/runs data."""
+    return JSONResponse(content=await build_openclaw_cron_overview(uid=uid))
+
+@app.get("/api/openclaw/browser/overview")
+async def api_openclaw_browser_overview(uid: str | None = None, include_snapshot: bool = False):
+    """Return read-only browser status/profiles/tabs and optional snapshot data."""
+    return JSONResponse(content=await build_openclaw_browser_overview(
+        uid=uid,
+        include_snapshot=include_snapshot,
+    ))
+
+@app.get("/api/openclaw/config-files/overview")
+async def api_openclaw_config_files_overview(
+    uid: str | None = None,
+    agent_id: str = "main",
+    file_name: str | None = None,
+):
+    """Return read-only config and agent file summaries."""
+    return JSONResponse(content=await build_openclaw_config_files_overview(
+        uid=uid,
+        agent_id=agent_id,
+        file_name=file_name,
+    ))
+
+@app.get("/api/openclaw/mutations/safety")
+async def api_openclaw_mutation_safety():
+    """Return feature-flag and confirmation/audit safety status for future mutations."""
+    return JSONResponse(content=build_mutation_safety_status())
+
+@app.get("/api/openclaw/mutations/audit")
+async def api_openclaw_mutation_audit(limit: int = 50):
+    """Return local mutation preview/token audit records."""
+    return JSONResponse(content=list_mutation_audit(limit=limit))
+
+@app.post("/api/openclaw/mutations/preview")
+async def api_openclaw_mutation_preview(request: Request):
+    """Build a dry-run preview for a future mutating action; never executes the action."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=build_mutation_preview(
+        action=str(body.get("action", "")),
+        uid=str(body.get("uid", "")),
+        params=body.get("params") or {},
+    ))
+
+@app.post("/api/openclaw/mutations/confirmation-token")
+async def api_openclaw_mutation_confirmation_token(request: Request):
+    """Issue a confirmation token only when mutation feature flag is enabled."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=create_confirmation_token(
+        action=str(body.get("action", "")),
+        uid=str(body.get("uid", "")),
+        params=body.get("params") or {},
+    ))
+
+@app.post("/api/openclaw/sessions/compact")
+async def api_openclaw_sessions_compact(request: Request):
+    """Execute controlled sessions.compact with feature flag + confirmation token."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=await execute_sessions_compact(
+        uid=str(body.get("uid", "")),
+        key=str(body.get("key", "")),
+        confirmation_token=str(body.get("confirmation_token", "")),
+    ))
+
+@app.post("/api/openclaw/cron/run")
+async def api_openclaw_cron_run(request: Request):
+    """Execute controlled cron.run with feature flag + confirmation token."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=await execute_cron_run(
+        uid=str(body.get("uid", "")),
+        cron_id=str(body.get("id", "")),
+        confirmation_token=str(body.get("confirmation_token", "")),
+    ))
+
+@app.post("/api/openclaw/browser/navigate")
+async def api_openclaw_browser_navigate(request: Request):
+    """Execute controlled browser.navigate with feature flag + confirmation token."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=await execute_browser_navigate(
+        uid=str(body.get("uid", "")),
+        url=str(body.get("url", "")),
+        confirmation_token=str(body.get("confirmation_token", "")),
+    ))
+
+@app.get("/api/openclaw/backup-diff/records")
+async def api_openclaw_backup_diff_records(limit: int = 50):
+    """Return metadata-only backup/diff preview records."""
+    return JSONResponse(content=list_backup_diff_records(limit=limit))
+
+@app.post("/api/openclaw/backup-diff/preview")
+async def api_openclaw_backup_diff_preview(request: Request):
+    """Read current config/file and return metadata-only diff preview; never writes."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=await build_openclaw_backup_diff_preview(
+        uid=str(body.get("uid", "")),
+        target_type=str(body.get("target_type", "")),
+        proposed_content=str(body.get("proposed_content", "")),
+        agent_id=str(body.get("agent_id", "main")),
+        file_name=str(body.get("file_name", "")),
+    ))
 
 @app.get("/api/openclaw/features")
 async def api_openclaw_features():
@@ -779,6 +1060,7 @@ async def ws_tunnel(ws: WebSocket):
         # 清理该节点的所有孤儿队列
         orphan_ids = state.ws_to_req_ids.pop(id(ws), set())
         for orphan_id in orphan_ids:
+            finish_tracked_dispatch(orphan_id, status_code=0, end_reason="node_disconnected")
             q = state.pending_queues.pop(orphan_id, None)
             state.req_id_to_ws_id.pop(orphan_id, None)
             state.req_id_timestamps.pop(orphan_id, None)
@@ -854,7 +1136,13 @@ def create_pending_request() -> tuple[str, asyncio.Queue]:
     return req_id, queue
 
 
-def cleanup_pending_request(req_id: str) -> None:
+def cleanup_pending_request(
+    req_id: str,
+    *,
+    end_reason: str = "cleanup",
+    status_code: int | None = None,
+) -> None:
+    finish_tracked_dispatch(req_id, status_code=status_code, end_reason=end_reason)
     state.pending_queues.pop(req_id, None)
     state.req_id_timestamps.pop(req_id, None)
     ws_id = state.req_id_to_ws_id.pop(req_id, None)
@@ -892,14 +1180,20 @@ async def retire_client(ws: WebSocket, reason: str) -> None:
                 q.put_nowait({"type": "error", "body": reason})
             except asyncio.QueueFull:
                 pass
-        cleanup_pending_request(req_id)
+        cleanup_pending_request(req_id, end_reason=reason, status_code=0)
     try:
         await ws.close()
     except Exception:
         pass
     logger.warning(f"🧹 已移除失效节点 {label}: {reason}。当前在线节点数: {len(state.active_clients)}")
 
-async def drain_and_close(req_id: str, queue: asyncio.Queue) -> None:
+async def drain_and_close(
+    req_id: str,
+    queue: asyncio.Queue,
+    *,
+    status_code: int | None = None,
+    end_reason: str = "drained",
+) -> None:
     try:
         while True:
             msg = await asyncio.wait_for(queue.get(), timeout=QUEUE_DRAIN_TIMEOUT)
@@ -908,15 +1202,38 @@ async def drain_and_close(req_id: str, queue: asyncio.Queue) -> None:
     except Exception:
         pass
     finally:
-        cleanup_pending_request(req_id)
+        cleanup_pending_request(req_id, end_reason=end_reason, status_code=status_code)
 
 def should_retry_status(status_code: int) -> bool:
     return status_code in RETRYABLE_STATUS_CODES or status_code >= 500
 
+def looks_like_upstream_truncated_json_error(raw_text: str) -> bool:
+    """Detect upstream JSON parser-style 400 messages for diagnostics only.
+
+    These messages can be caused by malformed tool-call arguments after
+    Responses→Chat conversion, so they must not be treated as proof that the
+    node connection is bad.
+    """
+    if not raw_text:
+        return False
+    lowered = raw_text.lower()
+    return any(marker in lowered for marker in UPSTREAM_TRUNCATED_JSON_MARKERS)
+
 def build_ws_payload(req_id: str, method: str, path: str, body: str) -> str:
     return json.dumps({"req_id": req_id, "method": method, "path": path, "body": body})
 
-async def dispatch_to_node(*, method: str, path: str, body: str, log_label: str, attempt_number: int) -> ForwardAttempt | None:
+async def dispatch_to_node(
+    *,
+    method: str,
+    path: str,
+    body: str,
+    log_label: str,
+    attempt_number: int,
+    gateway_request_id: str | None = None,
+    route_key: str | None = None,
+    model: str | None = None,
+    stream: bool | None = None,
+) -> ForwardAttempt | None:
     try:
         req_id, queue = create_pending_request()
     except RuntimeError:
@@ -925,7 +1242,7 @@ async def dispatch_to_node(*, method: str, path: str, body: str, log_label: str,
         
     target_ws = get_next_client(PREFERRED_UID)
     if not target_ws:
-        cleanup_pending_request(req_id)
+        cleanup_pending_request(req_id, end_reason="no_available_node")
         return None
 
     # 🌟 修复内存泄漏的双向绑定：既知道 WS 管哪些 req_id，也知道 req_id 归属于哪个 WS
@@ -934,17 +1251,39 @@ async def dispatch_to_node(*, method: str, path: str, body: str, log_label: str,
 
     ws_payload = build_ws_payload(req_id, method, path, body)
     attempt_started_at = time.monotonic()
+    model_from_body, stream_from_body = extract_request_metadata(body)
+    target_uid = state.client_uids.get(id(target_ws), "")
+    tracking_record = {
+        "gateway_request_id": gateway_request_id or new_gateway_request_id(),
+        "node_request_id": req_id,
+        "route": route_key or path,
+        "upstream_path": path,
+        "method": method,
+        "model": model if model is not None else model_from_body,
+        "stream": stream if stream is not None else stream_from_body,
+        "node_uid": target_uid,
+        "node_addr": node_addr(target_ws),
+        "node": node_label(target_ws),
+        "attempt": attempt_number,
+        "started_at": time.time(),
+    }
+    state.start_dispatch(tracking_record)
     record_attempt_started(target_ws)
 
     try:
         await target_ws.send_text(ws_payload)
-        target_uid = state.client_uids.get(id(target_ws), "")
         uid_part = f", uid={target_uid}" if target_uid else ""
-        logger.debug(f"👉 {log_label} [{req_id[:8]}] ({method} {path}) -> 节点: {node_label(target_ws)}{uid_part} (尝试 {attempt_number})")
+        logger.info(
+            f"👉 请求命中节点: {log_label} gw={tracking_record['gateway_request_id']} "
+            f"node_req={req_id[:8]} route={tracking_record['route']} upstream={method} {path} "
+            f"model={tracking_record.get('model') or '-'} stream={tracking_record.get('stream')} "
+            f"节点={node_label(target_ws)} addr={tracking_record['node_addr']}{uid_part} "
+            f"attempt={attempt_number}"
+        )
     except RuntimeError:
         record_attempt_finished(target_ws=target_ws, status_code=0, first_byte_latency_ms=(time.monotonic() - attempt_started_at) * 1000, success=False)
         logger.warning(f"⚠️ {log_label} 转发失败，节点状态异常，尝试切换...")
-        cleanup_pending_request(req_id) # 内部会自动解绑 target_ws
+        cleanup_pending_request(req_id, end_reason="send_failed", status_code=0) # 内部会自动解绑 target_ws
         if target_ws in state.active_clients:
             state.active_clients.remove(target_ws)
         state.client_uids.pop(id(target_ws), None)
@@ -957,20 +1296,44 @@ async def dispatch_to_node(*, method: str, path: str, body: str, log_label: str,
         first_msg = await asyncio.wait_for(queue.get(), timeout=NODE_RESPONSE_TIMEOUT)
     except asyncio.TimeoutError:
         record_attempt_finished(target_ws=target_ws, status_code=504, first_byte_latency_ms=(time.monotonic() - attempt_started_at) * 1000, success=False)
-        cleanup_pending_request(req_id)
+        cleanup_pending_request(req_id, end_reason="first_byte_timeout", status_code=504)
         raise
+    status_code = int(first_msg.get("status") or 200)
+    state.mark_dispatch_first_byte(req_id, status_code=status_code)
 
     record_attempt_finished(
         target_ws=target_ws,
-        status_code=int(first_msg.get("status", 200)),
+        status_code=status_code,
         first_byte_latency_ms=(time.monotonic() - attempt_started_at) * 1000,
-        success=first_msg.get("type") != "error" and not should_retry_status(int(first_msg.get("status", 200))),
+        success=first_msg.get("type") != "error" and not should_retry_status(status_code),
     )
     return ForwardAttempt(req_id=req_id, queue=queue, target_ws=target_ws, first_msg=first_msg, attempt_number=attempt_number)
 
 
-async def prepare_forward_attempt(*, method: str, path: str, body: str, log_label: str, retry_state: RetryState, attempt_number: int) -> ForwardAttempt | None:
-    attempt = await dispatch_to_node(method=method, path=path, body=body, log_label=log_label, attempt_number=attempt_number)
+async def prepare_forward_attempt(
+    *,
+    method: str,
+    path: str,
+    body: str,
+    log_label: str,
+    retry_state: RetryState,
+    attempt_number: int,
+    gateway_request_id: str | None = None,
+    route_key: str | None = None,
+    model: str | None = None,
+    stream: bool | None = None,
+) -> ForwardAttempt | None:
+    attempt = await dispatch_to_node(
+        method=method,
+        path=path,
+        body=body,
+        log_label=log_label,
+        attempt_number=attempt_number,
+        gateway_request_id=gateway_request_id,
+        route_key=route_key,
+        model=model,
+        stream=stream,
+    )
     if attempt is None:
         return None
 
@@ -979,7 +1342,7 @@ async def prepare_forward_attempt(*, method: str, path: str, body: str, log_labe
         error_text = first_msg.get("body") or "节点返回错误"
         logger.warning(f"⚠️ {log_label} 节点返回内部错误: {error_text}，尝试切换...")
         retry_state.response_text = f"Gateway Error: {error_text}"
-        cleanup_pending_request(attempt.req_id)
+        cleanup_pending_request(attempt.req_id, end_reason="node_error", status_code=0)
         return None
 
     status_code = first_msg.get("status", 200)
@@ -995,7 +1358,7 @@ async def prepare_forward_attempt(*, method: str, path: str, body: str, log_labe
         except asyncio.TimeoutError:
             pass
         finally:
-            cleanup_pending_request(attempt.req_id)
+            cleanup_pending_request(attempt.req_id, end_reason="upstream_401", status_code=401)
         preview = "".join(body_preview_parts).replace("\n", "\\n")[:512]
         if preview:
             logger.warning(f"⚠️ {log_label} 节点 401 响应体摘要: {preview}")
@@ -1013,8 +1376,57 @@ async def prepare_forward_attempt(*, method: str, path: str, body: str, log_labe
     if should_retry_status(status_code):
         logger.warning(f"⚠️ {log_label} 节点返回状态码 {status_code}，触发自动重试 (当前 attempt={attempt_number})...")
         retry_state.status_code = status_code
-        _track_task(asyncio.create_task(drain_and_close(attempt.req_id, attempt.queue)))
+        _track_task(asyncio.create_task(drain_and_close(attempt.req_id, attempt.queue, status_code=status_code, end_reason=f"retry_status_{status_code}")))
         return None
+
+    if status_code == 400:
+        body_preview_parts: list[str] = []
+        consumed_msgs: list[dict[str, Any]] = []
+        try:
+            while len("".join(body_preview_parts)) < 512:
+                msg = await asyncio.wait_for(attempt.queue.get(), timeout=1.5)
+                consumed_msgs.append(msg)
+                if msg.get("type") == "chunk":
+                    body_preview_parts.append(str(msg.get("body", "")))
+                if msg.get("type") in {"finish", "error"}:
+                    break
+        except asyncio.TimeoutError:
+            pass
+
+        preview = "".join(body_preview_parts)[:512]
+        if looks_like_upstream_truncated_json_error(preview):
+            logger.warning(
+                f"⚠️ {log_label} 上游返回 JSON 解析类 400；按请求/转换错误返回，"
+                f"不退休节点: node={node_label(attempt.target_ws)} "
+                f"preview={preview.replace(chr(10), chr(92) + 'n')}"
+            )
+            record_error(
+                path,
+                400,
+                "上游 JSON 解析类 400，未退休节点",
+                detail=preview,
+                category="upstream_request",
+            )
+
+        # We consumed up to 512 bytes to classify the 400.  For upstream
+        # validation/request errors, put the preview back so the caller can
+        # still return the original error body to the client.
+        if consumed_msgs:
+            replay_queue: asyncio.Queue = asyncio.Queue()
+            for msg in consumed_msgs:
+                replay_queue.put_nowait(msg)
+            while not attempt.queue.empty():
+                try:
+                    replay_queue.put_nowait(attempt.queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            attempt = ForwardAttempt(
+                req_id=attempt.req_id,
+                queue=replay_queue,
+                target_ws=attempt.target_ws,
+                first_msg=attempt.first_msg,
+                attempt_number=attempt.attempt_number,
+            )
 
     return attempt
 
@@ -1029,17 +1441,22 @@ def normalize_response_headers(headers: dict | None) -> tuple[str, dict]:
 
 async def collect_response_body(current_req_id: str, current_queue: asyncio.Queue, timeout: int = 120) -> str:
     chunks: list[str] = []
+    end_reason = "completed"
     try:
         while True:
             msg = await asyncio.wait_for(current_queue.get(), timeout=timeout)
             if msg.get("type") == "finish":
                 break
             if msg.get("type") == "error":
+                end_reason = "node_error"
                 raise RuntimeError(msg.get("body") or "节点返回错误")
             if msg.get("type") == "chunk":
                 chunks.append(msg.get("body", ""))
+    except asyncio.TimeoutError:
+        end_reason = "body_timeout"
+        raise
     finally:
-        cleanup_pending_request(current_req_id)
+        cleanup_pending_request(current_req_id, end_reason=end_reason)
     return "".join(chunks)
 
 
@@ -1050,6 +1467,9 @@ async def collect_upstream_chat_response(
     body_text: str,
     log_label: str,
     retry_state: RetryState,
+    gateway_request_id: str,
+    model: str = "",
+    stream: bool = False,
 ) -> tuple[dict[str, Any], int, float]:
     max_retries = min(MAX_RETRIES, get_available_client_count())
     for attempt in range(max_retries):
@@ -1062,6 +1482,10 @@ async def collect_upstream_chat_response(
                 log_label=log_label,
                 retry_state=retry_state,
                 attempt_number=attempt + 1,
+                gateway_request_id=gateway_request_id,
+                route_key=route_key,
+                model=model,
+                stream=stream,
             )
             if prepared is None:
                 continue
@@ -1142,6 +1566,7 @@ async def handle_compaction_request(req_body: dict[str, Any], *, route_key: str,
     request_started_at = time.monotonic()
     record_request_started(route_key, is_streaming=stream)
     retry_state = RetryState()
+    gateway_request_id = new_gateway_request_id()
 
     try:
         chat_req = _build_compaction_chat_request(req_body)
@@ -1160,6 +1585,9 @@ async def handle_compaction_request(req_body: dict[str, Any], *, route_key: str,
             body_text=body_text,
             log_label="Responses Compact 请求",
             retry_state=retry_state,
+            gateway_request_id=gateway_request_id,
+            model=model,
+            stream=False,
         )
     except TimeoutError:
         record_request_finished(route_key=route_key, status_code=retry_state.status_code, started_at=request_started_at, first_byte_at=None, success=False)
@@ -1268,12 +1696,24 @@ async def audio_speech_handler(payload: AudioSpeechRequest):
     retry_state = RetryState()
     route_key = "/v1/audio/speech"
     request_started_at = time.monotonic()
+    gateway_request_id = new_gateway_request_id()
     record_request_started(route_key, is_streaming=False)
 
     for attempt in range(max_retries):
         req_id = "unknown"
         try:
-            prepared = await prepare_forward_attempt(method="POST", path="/v1/chat/completions", body=body_text, log_label="TTS 映射请求", retry_state=retry_state, attempt_number=attempt + 1)
+            prepared = await prepare_forward_attempt(
+                method="POST",
+                path="/v1/chat/completions",
+                body=body_text,
+                log_label="TTS 映射请求",
+                retry_state=retry_state,
+                attempt_number=attempt + 1,
+                gateway_request_id=gateway_request_id,
+                route_key=route_key,
+                model=mimo_payload.get("model", ""),
+                stream=False,
+            )
             if prepared is None:
                 continue
             req_id = prepared.req_id
@@ -1384,12 +1824,24 @@ async def responses_handler(request: Request):
     retry_state = RetryState()
     route_key = "/v1/responses"
     request_started_at = time.monotonic()
+    gateway_request_id = new_gateway_request_id()
     record_request_started(route_key, is_streaming=is_streaming)
 
     for attempt in range(max_retries):
         req_id = "unknown"
         try:
-            prepared = await prepare_forward_attempt(method="POST", path="/v1/chat/completions", body=chat_body_text, log_label="Responses 映射请求", retry_state=retry_state, attempt_number=attempt + 1)
+            prepared = await prepare_forward_attempt(
+                method="POST",
+                path="/v1/chat/completions",
+                body=chat_body_text,
+                log_label="Responses 映射请求",
+                retry_state=retry_state,
+                attempt_number=attempt + 1,
+                gateway_request_id=gateway_request_id,
+                route_key=route_key,
+                model=model,
+                stream=is_streaming,
+            )
             if prepared is None:
                 continue
             req_id = prepared.req_id
@@ -1467,7 +1919,11 @@ async def responses_handler(request: Request):
                         data_task.cancel()
                         keepalive_task.cancel()
                         await asyncio.gather(data_task, keepalive_task, return_exceptions=True)
-                        cleanup_pending_request(current_req_id)
+                        cleanup_pending_request(
+                            current_req_id,
+                            end_reason="completed" if stream_succeeded else "stream_interrupted",
+                            status_code=status_code if stream_succeeded else 502,
+                        )
                         usage_obj = getattr(converter, "_usage", None)
                         record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded, usage=usage_obj.model_dump() if usage_obj else None)
 
@@ -1578,10 +2034,14 @@ async def _forward_request(request: Request, path: str):
     body_text = apply_model_mapping(body_text)
     route_key = path
     request_started_at = time.monotonic()
+    gateway_request_id = new_gateway_request_id()
 
     is_streaming = False
+    model = ""
     try:
-        is_streaming = json.loads(body_text).get("stream", False) is True
+        parsed_body = json.loads(body_text)
+        is_streaming = parsed_body.get("stream", False) is True
+        model = str(parsed_body.get("model") or "")
     except (json.JSONDecodeError, AttributeError):
         pass
     record_request_started(route_key, is_streaming=is_streaming)
@@ -1589,7 +2049,18 @@ async def _forward_request(request: Request, path: str):
     for attempt in range(max_retries):
         req_id = "unknown"
         try:
-            prepared = await prepare_forward_attempt(method=method, path=path, body=body_text, log_label="转发请求", retry_state=retry_state, attempt_number=attempt + 1)
+            prepared = await prepare_forward_attempt(
+                method=method,
+                path=path,
+                body=body_text,
+                log_label="转发请求",
+                retry_state=retry_state,
+                attempt_number=attempt + 1,
+                gateway_request_id=gateway_request_id,
+                route_key=route_key,
+                model=model,
+                stream=is_streaming,
+            )
             if prepared is None:
                 continue
             req_id = prepared.req_id
@@ -1660,7 +2131,11 @@ async def _forward_request(request: Request, path: str):
                     if keepalive_task is not None:
                         keepalive_task.cancel()
                     await asyncio.gather(*[t for t in (data_task, keepalive_task) if t is not None], return_exceptions=True)
-                    cleanup_pending_request(current_req_id)
+                    cleanup_pending_request(
+                        current_req_id,
+                        end_reason="completed" if stream_succeeded else "stream_interrupted",
+                        status_code=status_code if stream_succeeded else 502,
+                    )
                     record_request_finished(route_key=route_key, status_code=status_code if stream_succeeded else 502, started_at=request_started_at, first_byte_at=first_byte_at, success=stream_succeeded and status_code < 400, usage=usage_data)
 
             if status_code >= 400:

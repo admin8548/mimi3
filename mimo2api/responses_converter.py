@@ -1,9 +1,13 @@
 import json
+import logging
 import secrets
 import time
 from typing import Any, Iterator, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+logger = logging.getLogger(__name__)
 
 
 def _generate_id(prefix: str = "resp") -> str:
@@ -127,6 +131,45 @@ def _stringify_tool_payload(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _is_valid_json_string(value: str) -> bool:
+    try:
+        json.loads(value)
+    except (TypeError, json.JSONDecodeError, ValueError):
+        return False
+    return True
+
+
+def _log_invalid_tool_arguments(call_id: str, name: str, value: str) -> None:
+    logger.warning(
+        "Invalid tool arguments normalized: call_id=%s name=%s length=%s",
+        str(call_id or "")[:80],
+        str(name or "")[:120],
+        len(value),
+    )
+
+
+def _normalize_tool_arguments(value: Any, *, call_id: str = "", name: str = "") -> str:
+    """Return a Chat Completions-compatible JSON string for tool arguments.
+
+    Chat Completions requires `tool_calls[].function.arguments` to be a string
+    containing valid JSON.  Responses histories can contain native JSON values,
+    valid JSON strings, or plain/truncated text.  Plain text is wrapped so the
+    forwarded request remains syntactically valid without leaking the raw
+    payload into logs.
+    """
+    if isinstance(value, str):
+        if _is_valid_json_string(value):
+            return value
+        _log_invalid_tool_arguments(call_id, name, value)
+        return json.dumps({"_raw_arguments": value}, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _normalize_custom_tool_input(value: Any) -> str:
+    """Represent custom tool plain input as valid function-call arguments."""
+    return json.dumps({"input": value}, ensure_ascii=False)
+
+
 def _merge_reasoning_content(current: Optional[str], new: Optional[str]) -> Optional[str]:
     if not new:
         return current
@@ -213,7 +256,11 @@ def _parse_response_input_item(raw_item: Any) -> RespItem | None:
         item = dict(raw_item)
         item["call_id"] = item.get("call_id") or item.get("id") or _generate_id("call")
         item["name"] = item.get("name") or "function_call"
-        item["arguments"] = _stringify_tool_payload(item.get("arguments"))
+        item["arguments"] = _normalize_tool_arguments(
+            item.get("arguments"),
+            call_id=item["call_id"],
+            name=item["name"],
+        )
         return RespFunctionCallItem.model_validate(item)
 
     if item_type == "function_call_output":
@@ -236,12 +283,20 @@ def _parse_response_input_item(raw_item: Any) -> RespItem | None:
         return None
 
     if item_type == "custom_tool_call":
+        call_id = raw_item.get("call_id") or raw_item.get("id") or _generate_id("call")
+        name = raw_item.get("name") or "custom_tool_call"
+        if "arguments" in raw_item:
+            arguments = _normalize_tool_arguments(
+                raw_item.get("arguments"),
+                call_id=call_id,
+                name=name,
+            )
+        else:
+            arguments = _normalize_custom_tool_input(raw_item.get("input", raw_item.get("content")))
         return RespFunctionCallItem(
-            call_id=raw_item.get("call_id") or raw_item.get("id") or _generate_id("call"),
-            name=raw_item.get("name") or "custom_tool_call",
-            arguments=_stringify_tool_payload(
-                raw_item.get("arguments", raw_item.get("input", raw_item.get("content")))
-            ),
+            call_id=call_id,
+            name=name,
+            arguments=arguments,
         )
 
     if item_type == "custom_tool_call_output":
