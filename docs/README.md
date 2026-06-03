@@ -18,9 +18,11 @@
 3. `docs/protocol/openclaw_extension_roadmap.md`
 4. `docs/fixes/2026-06-02_mainline_stability_dispatch_recovery.md`
 5. `docs/guides/reusable_runtime_closed_loop_analysis_guide.md`
+6. `docs/guides/openclaw_webui_operations.md`
 
 ## 当前重点文档
 
 - `docs/protocol/openclaw_extension_roadmap.md`：OpenClaw 协议点位可扩展功能路线图。
+- `docs/guides/openclaw_webui_operations.md`：OpenClaw WebUI 中文操作手册。
 - `docs/fixes/2026-06-02_mainline_stability_dispatch_recovery.md`：主线稳定性/API 兼容/调度/错误恢复推进记录。
 - `docs/incidents/remote_compaction_fix_handoff.md`：remote compaction 修复交接。

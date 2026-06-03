@@ -68,6 +68,16 @@ def list_backup_diff_records(limit: int = 50) -> dict[str, Any]:
     return {"count": len(records), "records": records}
 
 
+def find_backup_diff_record(backup_id: str) -> dict[str, Any] | None:
+    backup_id = str(backup_id or "").strip()
+    if not backup_id:
+        return None
+    for record in reversed(_backup_diff_records):
+        if record.get("id") == backup_id:
+            return dict(record)
+    return None
+
+
 def clear_backup_diff_records() -> None:
     _backup_diff_records.clear()
 
@@ -136,7 +146,8 @@ async def build_openclaw_backup_diff_preview(
         if target_type == "config":
             current_payload = await readonly_rpc(client, "config.get", {}, timeout=DIAGNOSTICS_RPC_TIMEOUT_SECONDS)
             current_text = _extract_text(current_payload, ("raw", "content", "text"))
-            target = {"type": "config"}
+            base_hash = current_payload.get("baseHash") if isinstance(current_payload, dict) else None
+            target = {"type": "config", "baseHash": base_hash}
         else:
             current_payload = await readonly_rpc(
                 client,
@@ -198,4 +209,3 @@ async def build_openclaw_backup_diff_preview(
             await client.close()
         except Exception:
             logger.debug("OpenClaw backup/diff transient client close failed", exc_info=True)
-

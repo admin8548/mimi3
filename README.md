@@ -52,6 +52,10 @@ MIMO_MODEL_MAPPING_PATH=/app/data/model_mapping.json
 WS_TUNNEL_URL=ws://your-domain.com:8000/ws
 ```
 
+## OpenClaw WebUI 操作
+
+OpenClaw 页签包含只读诊断、写入前预览、受控写入、安全审计与恢复辅助。中文操作手册见：`docs/guides/openclaw_webui_operations.md`。
+
 ## 免责声明
 
 1. **本项目仅供学习交流使用，禁止一切商业/滥用行为。**

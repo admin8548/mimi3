@@ -64,6 +64,8 @@ from .openclaw_session_mutations import execute_sessions_compact
 from .openclaw_cron_mutations import execute_cron_run
 from .openclaw_browser_mutations import execute_browser_navigate
 from .openclaw_backup_diff import build_openclaw_backup_diff_preview, list_backup_diff_records
+from .openclaw_agent_file_mutations import execute_agents_files_set
+from .openclaw_config_mutations import execute_config_patch
 from .metrics_store import (
     METRICS_BUCKET_SECONDS,
     METRICS_DB_PATH,
@@ -932,6 +934,37 @@ async def api_openclaw_backup_diff_preview(request: Request):
         proposed_content=str(body.get("proposed_content", "")),
         agent_id=str(body.get("agent_id", "main")),
         file_name=str(body.get("file_name", "")),
+    ))
+
+@app.post("/api/openclaw/agents/files/set")
+async def api_openclaw_agents_files_set(request: Request):
+    """Execute controlled agents.files.set with feature flag + backup metadata + confirmation token."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=await execute_agents_files_set(
+        uid=str(body.get("uid", "")),
+        agent_id=str(body.get("agent_id", "main")),
+        file_name=str(body.get("file_name", "")),
+        content=str(body.get("content", "")),
+        backup_id=str(body.get("backup_id", "")),
+        confirmation_token=str(body.get("confirmation_token", "")),
+    ))
+
+@app.post("/api/openclaw/config/patch")
+async def api_openclaw_config_patch(request: Request):
+    """Execute controlled config.patch with feature flag + backup metadata + confirmation token."""
+    try:
+        body = await request.json()
+    except Exception:
+        return _admin_error_compat("请求体不是合法 JSON", 400)
+    return JSONResponse(content=await execute_config_patch(
+        uid=str(body.get("uid", "")),
+        raw=str(body.get("raw", "")),
+        base_hash=str(body.get("baseHash", "")),
+        backup_id=str(body.get("backup_id", "")),
+        confirmation_token=str(body.get("confirmation_token", "")),
     ))
 
 @app.get("/api/openclaw/features")

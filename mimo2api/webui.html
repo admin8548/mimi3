@@ -740,28 +740,57 @@
                 <div style="margin-top: 22px;">
                     <h2 style="margin: 0; font-size: 18px;">备份元数据 / 差异预览</h2>
                     <div class="status-subtext">只读取当前配置或文件，生成脱敏摘要与哈希；不保存明文备份，不执行写入。</div>
+                    <div class="warning-box" style="margin-top:10px;">高风险写入必须按“差异预览 → 确认令牌 → 二次确认 → 执行 → 审计”顺序操作；内容或目标变化后需重新预览。</div>
+                    <div class="warning-box" style="margin-top:10px;">高风险写入区：写入按钮默认禁用；必须先生成当前输入对应的差异预览，再生成一次性确认令牌，且服务端需显式开启 <code>MIMO_OPENCLAW_MUTATIONS_ENABLED=true</code>。</div>
                 </div>
                 <div class="diagnostics-grid">
                     <div class="diagnostic-card">
                         <div class="diagnostic-card-head">
                             <h3>写入前预览</h3>
-                            <button class="btn btn-outline btn-small" onclick="previewOpenClawBackupDiff()">生成差异预览</button>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button class="btn btn-outline btn-small" onclick="previewOpenClawBackupDiff()">生成差异预览</button>
+                                <button id="openclawConfigPatchTokenBtn" class="btn btn-outline btn-small" onclick="requestConfigPatchToken()" disabled>生成配置补丁令牌</button>
+                                <button id="openclawConfigPatchExecuteBtn" class="btn btn-danger btn-small" onclick="executeConfigPatch()" disabled>执行配置补丁</button>
+                                <button id="openclawAgentFileSetTokenBtn" class="btn btn-outline btn-small" onclick="requestAgentFileSetToken()" disabled>生成文件写入令牌</button>
+                                <button id="openclawAgentFileSetExecuteBtn" class="btn btn-danger btn-small" onclick="executeAgentFileSet()" disabled>执行文件写入</button>
+                            </div>
                         </div>
                         <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
-                            <select id="openclawBackupTargetSelect" class="text-input" style="max-width:150px;">
+                            <select id="openclawBackupTargetSelect" class="text-input" style="max-width:150px;" onchange="handleOpenClawWriteInputChanged()">
                                 <option value="config">配置</option>
                                 <option value="agent_file">智能体文件</option>
                             </select>
-                            <input id="openclawBackupAgentIdInput" class="text-input" style="max-width:130px;" value="main" aria-label="智能体 ID" />
-                            <input id="openclawBackupFileNameInput" class="text-input" style="max-width:180px;" placeholder="文件名，如 AGENTS.md" aria-label="智能体文件名" />
+                            <input id="openclawBackupAgentIdInput" class="text-input" style="max-width:130px;" value="main" aria-label="智能体 ID" oninput="handleOpenClawWriteInputChanged()" />
+                            <input id="openclawBackupFileNameInput" class="text-input" style="max-width:180px;" placeholder="文件名，如 AGENTS.md" aria-label="智能体文件名" oninput="handleOpenClawWriteInputChanged()" />
                         </div>
-                        <textarea id="openclawProposedContentInput" class="form-control" style="min-height:120px;" placeholder="在这里粘贴拟写入的新内容；当前阶段只做差异预览，不会写入。"></textarea>
+                        <textarea id="openclawProposedContentInput" class="form-control" style="min-height:120px;" placeholder="在这里粘贴拟写入的新内容；未开启 feature flag 时不会写入。" oninput="handleOpenClawWriteInputChanged()"></textarea>
+                        <details class="json-details" open>
+                            <summary>安全操作步骤</summary>
+                            <ol class="status-subtext" style="margin:8px 0 0 18px;">
+                                <li>先选择目标并粘贴拟写入内容，点击“生成差异预览”。</li>
+                                <li>确认 backup ID、baseHash 或文件名、内容哈希无误后，按钮才会允许生成令牌。</li>
+                                <li>内容、目标或文件名发生变化后，需重新生成差异预览和确认令牌。</li>
+                                <li>恢复配置时请先把旧 raw 粘贴到上方，再重新预览以获取“当前 baseHash”；恢复智能体文件同样需要粘贴旧文件明文后重新预览。</li>
+                            </ol>
+                        </details>
+                        <div id="openclawConfigPatchResult" class="status-subtext" style="margin-top: 12px;">配置补丁默认关闭，需先生成配置差异预览。</div>
+                        <div id="openclawAgentFileSetResult" class="status-subtext" style="margin-top: 12px;">文件写入默认关闭，需先生成智能体文件差异预览。</div>
                         <div id="openclawBackupDiffPreview" class="status-subtext" style="margin-top: 12px;">等待生成差异预览。</div>
+                    </div>
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>最近备份元数据</h3>
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawBackupDiffRecords()">刷新记录</button>
+                        </div>
+                        <div class="status-subtext" style="margin-bottom: 12px;">只显示 metadata 与哈希，不包含明文 raw/文件内容；“复制恢复参数”会复制恢复步骤和目标信息。</div>
+                        <div id="openclawBackupDiffRecords" class="status-subtext">等待加载备份元数据。</div>
                     </div>
                 </div>
                 <div style="margin-top: 22px;">
                     <h2 style="margin: 0; font-size: 18px;">受控写入安全底座</h2>
                     <div class="status-subtext">默认关闭所有写入；这里只展示 feature flag、dry-run preview 和审计记录。</div>
+                    <div class="warning-box" style="margin-top:10px;">高风险写入默认受 <code>MIMO_OPENCLAW_MUTATIONS_ENABLED=false</code> 保护；只有显式开启后才可签发一次性确认令牌。</div>
+                    <div class="warning-box" style="margin-top:10px;">受控写入只允许已实现的安全动作；不开放 config.apply / config.set，不保存明文备份，不支持批量写入。</div>
                 </div>
                 <div class="diagnostics-grid">
                     <div class="diagnostic-card">
@@ -770,7 +799,7 @@
                             <button class="btn btn-outline btn-small" onclick="fetchOpenClawMutationSafety()">刷新安全状态</button>
                         </div>
                         <div class="diagnostics-toolbar" style="margin-top: 0; margin-bottom: 12px;">
-                            <select id="openclawMutationActionSelect" class="text-input" style="max-width:220px;">
+                            <select id="openclawMutationActionSelect" class="text-input" style="max-width:220px;" onchange="fetchOpenClawMutationSafety()">
                                 <option value="sessions.compact">sessions.compact</option>
                                 <option value="cron.run">cron.run</option>
                                 <option value="browser.navigate">browser.navigate</option>
@@ -780,6 +809,14 @@
                             <button class="btn btn-outline btn-small" onclick="previewOpenClawMutation()">生成演练预览</button>
                         </div>
                         <div id="openclawMutationSafety" class="status-subtext">等待加载。</div>
+                    </div>
+                    <div class="diagnostic-card">
+                        <div class="diagnostic-card-head">
+                            <h3>写入审计记录</h3>
+                            <button class="btn btn-outline btn-small" onclick="fetchOpenClawMutationAudit()">刷新审计</button>
+                        </div>
+                        <div class="status-subtext" style="margin-bottom: 12px;">展示 preview / confirmation_token / execute_* 等本地审计阶段；参数已脱敏，只显示摘要与 digest。</div>
+                        <div id="openclawMutationAudit" class="status-subtext">等待加载审计记录。</div>
                     </div>
                 </div>
             </div>
@@ -830,6 +867,12 @@
         let lastCronRunId = '';
         let lastBrowserNavigateToken = '';
         let lastBrowserNavigateUrl = '';
+        let lastAgentFileSetToken = '';
+        let lastAgentFileBackup = null;
+        let lastConfigPatchToken = '';
+        let lastConfigPatchBackup = null;
+        let lastBackupDiffRecords = [];
+        let lastMutationAuditRecords = [];
 
         const diagnosticSectionNames = ['health', 'status', 'usage', 'models', 'tools', 'sessions', 'cron', 'browser'];
         const diagnosticSectionLabels = {
@@ -870,6 +913,7 @@
                 fetchOpenClawBrowserOverview(false);
                 fetchOpenClawConfigFilesOverview();
                 fetchOpenClawMutationSafety();
+                fetchOpenClawBackupDiffRecords();
             }
             if (tabName === 'errors') {
                 fetchErrors();
@@ -916,6 +960,18 @@
                 throw new Error('UNAUTHORIZED');
             }
             return res;
+        }
+
+        async function postJson(url, payload) {
+            return apiFetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+        }
+
+        function maskIssuedToken(payload) {
+            return {...payload, token: payload?.token ? '<已生成，前端已暂存>' : ''};
         }
 
         function startStatusPolling() {
@@ -1106,6 +1162,14 @@
             }
         }
 
+        function getOpenClawSelectedUid() {
+            return document.getElementById('openclawUidSelect')?.value || '';
+        }
+
+        function formatOpenClawUid(uid) {
+            return uid || '(默认)';
+        }
+
         function escapeHtml(value) {
             return String(value ?? '')
                 .replaceAll('&', '&amp;')
@@ -1113,6 +1177,14 @@
                 .replaceAll('>', '&gt;')
                 .replaceAll('"', '&quot;')
                 .replaceAll("'", '&#39;');
+        }
+
+        function formatOpenClawErrors(errors, fallback) {
+            return (errors || []).map(e => e.message || JSON.stringify(e)).join('；') || fallback;
+        }
+
+        function renderOpenClawWarningBox(el, errors, fallback) {
+            el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(formatOpenClawErrors(errors, fallback))}</div>`;
         }
 
         function formatDuration(ms) {
@@ -1125,6 +1197,23 @@
             if (!ts) return '-';
             const d = new Date(Number(ts) * 1000);
             return d.toLocaleTimeString();
+        }
+
+        async function copyTextToClipboard(text) {
+            const value = String(text ?? '');
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(value);
+                return;
+            }
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
         }
 
         function shortReqId(item) {
@@ -1289,8 +1378,7 @@
 
         async function fetchOpenClawDiagnostics(forceRefresh = false) {
             if (webAuthEnabled && !webAuthReady) return;
-            const select = document.getElementById('openclawUidSelect');
-            const uid = select.value || '';
+            const uid = getOpenClawSelectedUid();
             const params = new URLSearchParams();
             if (uid) params.set('uid', uid);
             if (forceRefresh) params.set('refresh', 'true');
@@ -1317,6 +1405,7 @@
                 fetchOpenClawBrowserOverview(false);
                 fetchOpenClawConfigFilesOverview();
                 fetchOpenClawMutationSafety();
+                fetchOpenClawBackupDiffRecords();
             } catch (e) {
                 if (e.message !== 'UNAUTHORIZED') {
                     document.getElementById('openclawWarning').classList.remove('hidden');
@@ -1380,7 +1469,7 @@
 
         async function fetchOpenClawObservability() {
             if (webAuthEnabled && !webAuthReady) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             const params = new URLSearchParams({ limit: '30' });
             if (uid) params.set('uid', uid);
             try {
@@ -1398,8 +1487,7 @@
         function renderOpenClawSessionsOverview(payload) {
             const el = document.getElementById('openclawSessionsOverview');
             if (!payload.ok) {
-                const errors = payload.errors || [];
-                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Sessions overview failed')}</div>`;
+                renderOpenClawWarningBox(el, payload.errors, 'Sessions overview failed');
                 return;
             }
             const sessions = payload.sessions || {};
@@ -1429,7 +1517,7 @@
 
         async function fetchOpenClawSessionsOverview() {
             if (webAuthEnabled && !webAuthReady) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             const params = new URLSearchParams({ limit: '40', include_preview: 'true' });
             if (uid) params.set('uid', uid);
             try {
@@ -1444,8 +1532,7 @@
         }
 
         function setCompactResult(payload) {
-            const el = document.getElementById('openclawCompactResult');
-            el.innerHTML = `<details class="json-details" open><summary>会话压缩结果</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+            renderOpenClawJsonResult('openclawCompactResult', '会话压缩结果', payload);
         }
 
         function getCompactKey() {
@@ -1458,13 +1545,9 @@
                 showToast('请先填写 session key', 'error');
                 return;
             }
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/preview', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'sessions.compact', uid, params: { key } })
-                });
+                const res = await postJson('/api/openclaw/mutations/preview', { action: 'sessions.compact', uid, params: { key } });
                 const payload = await res.json();
                 setCompactResult(payload);
                 await fetchOpenClawMutationSafety(payload);
@@ -1480,20 +1563,16 @@
                 return;
             }
             if (!confirm('确认要为 sessions.compact 生成一次性确认令牌吗？如果服务端未开启 feature flag，此操作会被拒绝。')) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/confirmation-token', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'sessions.compact', uid, params: { key } })
-                });
+                const res = await postJson('/api/openclaw/mutations/confirmation-token', { action: 'sessions.compact', uid, params: { key } });
                 const payload = await res.json();
                 if (payload.ok && payload.token) {
                     lastSessionsCompactToken = payload.token;
                     lastSessionsCompactKey = key;
                     showToast('确认令牌已生成');
                 }
-                setCompactResult({...payload, token: payload.token ? '<已生成，前端已暂存>' : ''});
+                setCompactResult(maskIssuedToken(payload));
                 await fetchOpenClawMutationSafety(payload);
             } catch (e) {
                 if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
@@ -1510,14 +1589,10 @@
                 showToast('请先为当前 session key 生成确认令牌', 'error');
                 return;
             }
-            if (!confirm(`最终确认：执行 sessions.compact？\nUID: ${document.getElementById('openclawUidSelect').value || '(默认)'}\nKey: ${key}`)) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            if (!confirm(`最终确认：执行 sessions.compact？\nUID: ${formatOpenClawUid(getOpenClawSelectedUid())}\nKey: ${key}`)) return;
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/sessions/compact', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ uid, key, confirmation_token: lastSessionsCompactToken })
-                });
+                const res = await postJson('/api/openclaw/sessions/compact', { uid, key, confirmation_token: lastSessionsCompactToken });
                 const payload = await res.json();
                 lastSessionsCompactToken = '';
                 lastSessionsCompactKey = '';
@@ -1530,8 +1605,7 @@
         }
 
         function setCronRunResult(payload) {
-            const el = document.getElementById('openclawCronRunResult');
-            el.innerHTML = `<details class="json-details" open><summary>定时任务运行结果</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+            renderOpenClawJsonResult('openclawCronRunResult', '定时任务运行结果', payload);
         }
 
         function getCronRunId() {
@@ -1544,13 +1618,9 @@
                 showToast('请先填写 cron job id', 'error');
                 return;
             }
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/preview', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'cron.run', uid, params: { id } })
-                });
+                const res = await postJson('/api/openclaw/mutations/preview', { action: 'cron.run', uid, params: { id } });
                 const payload = await res.json();
                 setCronRunResult(payload);
                 await fetchOpenClawMutationSafety(payload);
@@ -1566,20 +1636,16 @@
                 return;
             }
             if (!confirm('确认要为 cron.run 生成一次性确认令牌吗？如果服务端未开启 feature flag，此操作会被拒绝。')) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/confirmation-token', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'cron.run', uid, params: { id } })
-                });
+                const res = await postJson('/api/openclaw/mutations/confirmation-token', { action: 'cron.run', uid, params: { id } });
                 const payload = await res.json();
                 if (payload.ok && payload.token) {
                     lastCronRunToken = payload.token;
                     lastCronRunId = id;
                     showToast('确认令牌已生成');
                 }
-                setCronRunResult({...payload, token: payload.token ? '<已生成，前端已暂存>' : ''});
+                setCronRunResult(maskIssuedToken(payload));
                 await fetchOpenClawMutationSafety(payload);
             } catch (e) {
                 if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
@@ -1596,14 +1662,10 @@
                 showToast('请先为当前 cron job id 生成确认令牌', 'error');
                 return;
             }
-            if (!confirm(`最终确认：执行 cron.run？\nUID: ${document.getElementById('openclawUidSelect').value || '(默认)'}\nJob ID: ${id}`)) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            if (!confirm(`最终确认：执行 cron.run？\nUID: ${formatOpenClawUid(getOpenClawSelectedUid())}\nJob ID: ${id}`)) return;
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/cron/run', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ uid, id, confirmation_token: lastCronRunToken })
-                });
+                const res = await postJson('/api/openclaw/cron/run', { uid, id, confirmation_token: lastCronRunToken });
                 const payload = await res.json();
                 lastCronRunToken = '';
                 lastCronRunId = '';
@@ -1616,8 +1678,7 @@
         }
 
         function setNavigateResult(payload) {
-            const el = document.getElementById('openclawNavigateResult');
-            el.innerHTML = `<details class="json-details" open><summary>浏览器导航结果</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+            renderOpenClawJsonResult('openclawNavigateResult', '浏览器导航结果', payload);
         }
 
         function getNavigateUrl() {
@@ -1630,13 +1691,9 @@
                 showToast('请先填写导航 URL', 'error');
                 return;
             }
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/preview', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'browser.navigate', uid, params: { url } })
-                });
+                const res = await postJson('/api/openclaw/mutations/preview', { action: 'browser.navigate', uid, params: { url } });
                 const payload = await res.json();
                 setNavigateResult(payload);
                 await fetchOpenClawMutationSafety(payload);
@@ -1652,20 +1709,16 @@
                 return;
             }
             if (!confirm('确认要为 browser.navigate 生成一次性确认令牌吗？仅允许 http/https/about:blank。')) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/confirmation-token', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action: 'browser.navigate', uid, params: { url } })
-                });
+                const res = await postJson('/api/openclaw/mutations/confirmation-token', { action: 'browser.navigate', uid, params: { url } });
                 const payload = await res.json();
                 if (payload.ok && payload.token) {
                     lastBrowserNavigateToken = payload.token;
                     lastBrowserNavigateUrl = url;
                     showToast('确认令牌已生成');
                 }
-                setNavigateResult({...payload, token: payload.token ? '<已生成，前端已暂存>' : ''});
+                setNavigateResult(maskIssuedToken(payload));
                 await fetchOpenClawMutationSafety(payload);
             } catch (e) {
                 if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
@@ -1682,14 +1735,10 @@
                 showToast('请先为当前导航 URL 生成确认令牌', 'error');
                 return;
             }
-            if (!confirm(`最终确认：执行 browser.navigate？\nUID: ${document.getElementById('openclawUidSelect').value || '(默认)'}\nURL: ${url}`)) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            if (!confirm(`最终确认：执行 browser.navigate？\nUID: ${formatOpenClawUid(getOpenClawSelectedUid())}\nURL: ${url}`)) return;
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/browser/navigate', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ uid, url, confirmation_token: lastBrowserNavigateToken })
-                });
+                const res = await postJson('/api/openclaw/browser/navigate', { uid, url, confirmation_token: lastBrowserNavigateToken });
                 const payload = await res.json();
                 lastBrowserNavigateToken = '';
                 lastBrowserNavigateUrl = '';
@@ -1704,8 +1753,7 @@
         function renderOpenClawCronOverview(payload) {
             const el = document.getElementById('openclawCronOverview');
             if (!payload.ok) {
-                const errors = payload.errors || [];
-                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Cron overview failed')}</div>`;
+                renderOpenClawWarningBox(el, payload.errors, 'Cron overview failed');
                 return;
             }
             const summary = payload.summary || {};
@@ -1734,7 +1782,7 @@
 
         async function fetchOpenClawCronOverview() {
             if (webAuthEnabled && !webAuthReady) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             const params = new URLSearchParams();
             if (uid) params.set('uid', uid);
             try {
@@ -1751,8 +1799,7 @@
         function renderOpenClawBrowserOverview(payload) {
             const el = document.getElementById('openclawBrowserOverview');
             if (!payload.ok) {
-                const errors = payload.errors || [];
-                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Browser overview failed')}</div>`;
+                renderOpenClawWarningBox(el, payload.errors, 'Browser overview failed');
                 return;
             }
             const summary = payload.summary || {};
@@ -1786,7 +1833,7 @@
 
         async function fetchOpenClawBrowserOverview(includeSnapshot = false) {
             if (webAuthEnabled && !webAuthReady) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             const params = new URLSearchParams();
             if (uid) params.set('uid', uid);
             if (includeSnapshot) params.set('include_snapshot', 'true');
@@ -1804,8 +1851,7 @@
         function renderOpenClawConfigFilesOverview(payload) {
             const el = document.getElementById('openclawConfigFilesOverview');
             if (!payload.ok) {
-                const errors = payload.errors || [];
-                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || 'Config/files overview failed')}</div>`;
+                renderOpenClawWarningBox(el, payload.errors, 'Config/files overview failed');
                 return;
             }
             const summary = payload.summary || {};
@@ -1839,7 +1885,7 @@
 
         async function fetchOpenClawConfigFilesOverview() {
             if (webAuthEnabled && !webAuthReady) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             const agentId = document.getElementById('openclawAgentIdInput').value.trim() || 'main';
             const fileName = document.getElementById('openclawFileNameInput').value.trim();
             const params = new URLSearchParams({ agent_id: agentId });
@@ -1856,11 +1902,117 @@
             }
         }
 
+        function openClawRecoveryPayload(record) {
+            const target = record.target || {};
+            const isConfig = target.type === 'config';
+            return {
+                backup_id: record.id || '',
+                uid: record.uid || '',
+                target,
+                changed: !!record.changed,
+                hashes: {
+                    current_sha256: record.current_sha256 || '',
+                    proposed_sha256: record.proposed_sha256 || ''
+                },
+                metadata_only: true,
+                recovery_steps: isConfig ? [
+                    '1. 找到你在外部保存的旧 config raw 明文；本记录只保存哈希，不保存明文。',
+                    '2. 在 WebUI 目标选择“配置”，把旧 raw 粘贴到拟写入内容。',
+                    '3. 重新点击“生成差异预览”，让服务读取当前 config.get 并获取当前 baseHash。',
+                    '4. 生成配置补丁令牌，二次确认后执行 config.patch。'
+                ] : [
+                    '1. 找到你在外部保存的旧智能体文件明文；本记录只保存哈希，不保存明文。',
+                    '2. 在 WebUI 目标选择“智能体文件”，填写 agent_id 与 file_name，把旧内容粘贴到拟写入内容。',
+                    '3. 重新点击“生成差异预览”，再生成文件写入令牌。',
+                    '4. 二次确认后执行 agents.files.set。'
+                ]
+            };
+        }
+
+        function renderOpenClawBackupDiffRecords(payload) {
+            const el = document.getElementById('openclawBackupDiffRecords');
+            const records = payload.records || [];
+            lastBackupDiffRecords = records;
+            if (!records.length) {
+                el.innerHTML = '暂无备份元数据记录。生成差异预览后会在这里显示。';
+                return;
+            }
+            const rows = records.map((record, idx) => {
+                const target = record.target || {};
+                const targetLabel = target.type === 'agent_file'
+                    ? `智能体文件 ${target.agent_id || '-'} / ${target.file_name || '-'}`
+                    : `配置 baseHash=${target.baseHash || '-'}`;
+                return `
+                    <tr>
+                        <td>${escapeHtml(formatTs(record.ts))}</td>
+                        <td>${escapeHtml(record.uid || '-')}</td>
+                        <td>${escapeHtml(targetLabel)}</td>
+                        <td>${record.changed ? '是' : '否'}</td>
+                        <td><code>${escapeHtml(record.id || '-')}</code></td>
+                        <td style="white-space:nowrap;">
+                            <button class="btn btn-outline btn-small" onclick="loadOpenClawBackupRecordTarget(${idx})">载入目标</button>
+                            <button class="btn btn-outline btn-small" onclick="copyOpenClawBackupRecovery(${idx})">复制恢复参数</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+            el.innerHTML = `
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>时间</th><th>UID</th><th>目标</th><th>已变化</th><th>备份 ID</th><th>操作</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+                <details class="json-details">
+                    <summary>备份元数据 JSON</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function fetchOpenClawBackupDiffRecords() {
+            if (webAuthEnabled && !webAuthReady) return;
+            try {
+                const res = await apiFetch('/api/openclaw/backup-diff/records?limit=20');
+                const payload = await res.json();
+                renderOpenClawBackupDiffRecords(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawBackupDiffRecords').textContent = '备份元数据记录请求失败';
+                }
+            }
+        }
+
+        function loadOpenClawBackupRecordTarget(index) {
+            const record = lastBackupDiffRecords[index];
+            if (!record) return;
+            const target = record.target || {};
+            if (target.type === 'agent_file') {
+                document.getElementById('openclawBackupTargetSelect').value = 'agent_file';
+                document.getElementById('openclawBackupAgentIdInput').value = target.agent_id || 'main';
+                document.getElementById('openclawBackupFileNameInput').value = target.file_name || '';
+            } else {
+                document.getElementById('openclawBackupTargetSelect').value = 'config';
+            }
+            showToast('已载入目标；请粘贴要恢复/写入的明文内容后重新生成差异预览');
+            handleOpenClawWriteInputChanged();
+        }
+
+        async function copyOpenClawBackupRecovery(index) {
+            const record = lastBackupDiffRecords[index];
+            if (!record) return;
+            try {
+                await copyTextToClipboard(JSON.stringify(openClawRecoveryPayload(record), null, 2));
+                showToast('恢复参数已复制');
+            } catch (e) {
+                showToast('复制失败，请展开 JSON 手动复制', 'error');
+            }
+        }
+
         function renderOpenClawBackupDiffPreview(payload) {
             const el = document.getElementById('openclawBackupDiffPreview');
             if (!payload.ok) {
-                const errors = payload.errors || [];
-                el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(errors.map(e => e.message || JSON.stringify(e)).join('；') || '差异预览失败')}</div>`;
+                renderOpenClawWarningBox(el, payload.errors, '差异预览失败');
                 return;
             }
             const diff = payload.diff || {};
@@ -1880,9 +2032,51 @@
             `;
         }
 
+        function getOpenClawWriteState() {
+            const configReq = getConfigPatchRequest();
+            const fileReq = getAgentFileSetRequest();
+            const configPreviewReady = !!lastConfigPatchBackup
+                && configReq.targetType === 'config'
+                && lastConfigPatchBackup.raw === configReq.raw
+                && !!lastConfigPatchBackup.baseHash
+                && !!lastConfigPatchBackup.id;
+            const agentFilePreviewReady = !!lastAgentFileBackup
+                && fileReq.targetType === 'agent_file'
+                && lastAgentFileBackup.fileName === fileReq.fileName
+                && lastAgentFileBackup.agentId === fileReq.agentId
+                && lastAgentFileBackup.content === fileReq.content
+                && !!lastAgentFileBackup.id;
+            return {
+                configPreviewReady,
+                configExecuteReady: configPreviewReady && !!lastConfigPatchToken,
+                agentFilePreviewReady,
+                agentFileExecuteReady: agentFilePreviewReady && !!lastAgentFileSetToken
+            };
+        }
+
+        function updateOpenClawWriteButtons() {
+            if (!document.getElementById('openclawBackupTargetSelect')) return;
+            const state = getOpenClawWriteState();
+            const configTokenBtn = document.getElementById('openclawConfigPatchTokenBtn');
+            const configExecBtn = document.getElementById('openclawConfigPatchExecuteBtn');
+            const fileTokenBtn = document.getElementById('openclawAgentFileSetTokenBtn');
+            const fileExecBtn = document.getElementById('openclawAgentFileSetExecuteBtn');
+            if (configTokenBtn) configTokenBtn.disabled = !state.configPreviewReady;
+            if (configExecBtn) configExecBtn.disabled = !state.configExecuteReady;
+            if (fileTokenBtn) fileTokenBtn.disabled = !state.agentFilePreviewReady;
+            if (fileExecBtn) fileExecBtn.disabled = !state.agentFileExecuteReady;
+        }
+
+        function handleOpenClawWriteInputChanged() {
+            const state = getOpenClawWriteState();
+            if (!state.configPreviewReady) lastConfigPatchToken = '';
+            if (!state.agentFilePreviewReady) lastAgentFileSetToken = '';
+            updateOpenClawWriteButtons();
+        }
+
         async function previewOpenClawBackupDiff() {
             if (webAuthEnabled && !webAuthReady) return;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             const targetType = document.getElementById('openclawBackupTargetSelect').value;
             const agentId = document.getElementById('openclawBackupAgentIdInput').value.trim() || 'main';
             const fileName = document.getElementById('openclawBackupFileNameInput').value.trim();
@@ -1892,23 +2086,207 @@
                 return;
             }
             try {
-                const res = await apiFetch('/api/openclaw/backup-diff/preview', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
+                const res = await postJson('/api/openclaw/backup-diff/preview', {
                         uid,
                         target_type: targetType,
                         agent_id: agentId,
                         file_name: fileName,
                         proposed_content: proposedContent
-                    })
-                });
+                    });
                 const payload = await res.json();
+                if (payload.ok && targetType === 'agent_file') {
+                    lastAgentFileBackup = {
+                        id: payload.backup?.id || '',
+                        uid: payload.selected_uid || uid,
+                        agentId,
+                        fileName,
+                        content: proposedContent
+                    };
+                    lastAgentFileSetToken = '';
+                }
+                if (payload.ok && targetType === 'config') {
+                    lastConfigPatchBackup = {
+                        id: payload.backup?.id || '',
+                        uid: payload.selected_uid || uid,
+                        raw: proposedContent,
+                        baseHash: payload.target?.baseHash || ''
+                    };
+                    lastConfigPatchToken = '';
+                }
                 renderOpenClawBackupDiffPreview(payload);
+                updateOpenClawWriteButtons();
+                await fetchOpenClawBackupDiffRecords();
             } catch (e) {
                 if (e.message !== 'UNAUTHORIZED') {
                     document.getElementById('openclawBackupDiffPreview').textContent = '差异预览请求失败';
                 }
+            }
+        }
+
+        async function sha256Text(text) {
+            const bytes = new TextEncoder().encode(text);
+            const digest = await crypto.subtle.digest('SHA-256', bytes);
+            return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        function renderOpenClawJsonResult(elementId, summary, payload) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            el.innerHTML = `<details class="json-details" open><summary>${escapeHtml(summary)}</summary><pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre></details>`;
+        }
+
+        function setConfigPatchResult(payload) {
+            renderOpenClawJsonResult('openclawConfigPatchResult', '配置补丁结果', payload);
+        }
+
+        function getConfigPatchRequest() {
+            const uid = getOpenClawSelectedUid();
+            const targetType = document.getElementById('openclawBackupTargetSelect').value;
+            const raw = document.getElementById('openclawProposedContentInput').value;
+            return { uid, targetType, raw };
+        }
+
+        async function requestConfigPatchToken() {
+            const req = getConfigPatchRequest();
+            if (req.targetType !== 'config') {
+                showToast('请选择“配置”目标类型', 'error');
+                return;
+            }
+            if (!lastConfigPatchBackup || lastConfigPatchBackup.raw !== req.raw) {
+                showToast('请先为当前配置内容生成差异预览', 'error');
+                return;
+            }
+            if (!lastConfigPatchBackup.baseHash) {
+                showToast('差异预览未返回 baseHash，不能生成 config.patch 令牌', 'error');
+                return;
+            }
+            if (!confirm('确认要为 config.patch 生成一次性确认令牌吗？如果服务端未开启 feature flag，此操作会被拒绝。')) return;
+            const rawHash = await sha256Text(req.raw);
+            const params = { raw_sha256: rawHash, baseHash: lastConfigPatchBackup.baseHash, backup_id: lastConfigPatchBackup.id };
+            try {
+                const res = await postJson('/api/openclaw/mutations/confirmation-token', { action: 'config.patch', uid: lastConfigPatchBackup.uid || req.uid, params });
+                const payload = await res.json();
+                if (payload.ok && payload.token) {
+                    lastConfigPatchToken = payload.token;
+                    showToast('确认令牌已生成');
+                }
+                setConfigPatchResult(maskIssuedToken(payload));
+                await fetchOpenClawMutationSafety(payload);
+                updateOpenClawWriteButtons();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
+                updateOpenClawWriteButtons();
+            }
+        }
+
+        async function executeConfigPatch() {
+            const req = getConfigPatchRequest();
+            if (req.targetType !== 'config') {
+                showToast('请选择“配置”目标类型', 'error');
+                return;
+            }
+            if (!lastConfigPatchBackup || !lastConfigPatchToken) {
+                showToast('请先生成配置差异预览和确认令牌', 'error');
+                return;
+            }
+            if (lastConfigPatchBackup.raw !== req.raw) {
+                showToast('配置内容已变化，请重新生成差异预览和确认令牌', 'error');
+                return;
+            }
+            const rawHash = await sha256Text(req.raw);
+            if (!confirm(`最终确认：执行 config.patch？\nUID: ${formatOpenClawUid(lastConfigPatchBackup.uid || req.uid)}\nbackup ID: ${lastConfigPatchBackup.id || '(缺失)'}\nbaseHash: ${lastConfigPatchBackup.baseHash || '(缺失)'}\nraw SHA256: ${rawHash}`)) return;
+            try {
+                const res = await postJson('/api/openclaw/config/patch', {
+                        uid: lastConfigPatchBackup.uid || req.uid,
+                        raw: req.raw,
+                        baseHash: lastConfigPatchBackup.baseHash,
+                        backup_id: lastConfigPatchBackup.id,
+                        confirmation_token: lastConfigPatchToken
+                    });
+                const payload = await res.json();
+                lastConfigPatchToken = '';
+                setConfigPatchResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+                await fetchOpenClawConfigFilesOverview();
+                updateOpenClawWriteButtons();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('执行 config.patch 失败', 'error');
+                updateOpenClawWriteButtons();
+            }
+        }
+
+        function setAgentFileSetResult(payload) {
+            renderOpenClawJsonResult('openclawAgentFileSetResult', '文件写入结果', payload);
+        }
+
+        function getAgentFileSetRequest() {
+            const uid = getOpenClawSelectedUid();
+            const targetType = document.getElementById('openclawBackupTargetSelect').value;
+            const agentId = document.getElementById('openclawBackupAgentIdInput').value.trim() || 'main';
+            const fileName = document.getElementById('openclawBackupFileNameInput').value.trim();
+            const content = document.getElementById('openclawProposedContentInput').value;
+            return { uid, targetType, agentId, fileName, content };
+        }
+
+        async function requestAgentFileSetToken() {
+            const req = getAgentFileSetRequest();
+            if (req.targetType !== 'agent_file') {
+                showToast('请选择“智能体文件”目标类型', 'error');
+                return;
+            }
+            if (!lastAgentFileBackup || lastAgentFileBackup.fileName !== req.fileName || lastAgentFileBackup.agentId !== req.agentId || lastAgentFileBackup.content !== req.content) {
+                showToast('请先为当前文件和内容生成差异预览', 'error');
+                return;
+            }
+            if (!confirm('确认要为 agents.files.set 生成一次性确认令牌吗？如果服务端未开启 feature flag，此操作会被拒绝。')) return;
+            const contentHash = await sha256Text(req.content);
+            const params = { agentId: req.agentId, name: req.fileName, content_sha256: contentHash, backup_id: lastAgentFileBackup.id };
+            try {
+                const res = await postJson('/api/openclaw/mutations/confirmation-token', { action: 'agents.files.set', uid: lastAgentFileBackup.uid || req.uid, params });
+                const payload = await res.json();
+                if (payload.ok && payload.token) {
+                    lastAgentFileSetToken = payload.token;
+                    showToast('确认令牌已生成');
+                }
+                setAgentFileSetResult(maskIssuedToken(payload));
+                await fetchOpenClawMutationSafety(payload);
+                updateOpenClawWriteButtons();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('确认令牌生成失败', 'error');
+                updateOpenClawWriteButtons();
+            }
+        }
+
+        async function executeAgentFileSet() {
+            const req = getAgentFileSetRequest();
+            if (req.targetType !== 'agent_file') {
+                showToast('请选择“智能体文件”目标类型', 'error');
+                return;
+            }
+            if (!lastAgentFileBackup || !lastAgentFileSetToken) {
+                showToast('请先生成差异预览和确认令牌', 'error');
+                return;
+            }
+            const contentHash = await sha256Text(req.content);
+            if (!confirm(`最终确认：执行 agents.files.set？\nUID: ${formatOpenClawUid(lastAgentFileBackup.uid || req.uid)}\n智能体: ${req.agentId}\n文件: ${req.fileName}\nbackup ID: ${lastAgentFileBackup.id || '(缺失)'}\ncontent SHA256: ${contentHash}`)) return;
+            try {
+                const res = await postJson('/api/openclaw/agents/files/set', {
+                        uid: lastAgentFileBackup.uid || req.uid,
+                        agent_id: req.agentId,
+                        file_name: req.fileName,
+                        content: req.content,
+                        backup_id: lastAgentFileBackup.id,
+                        confirmation_token: lastAgentFileSetToken
+                    });
+                const payload = await res.json();
+                lastAgentFileSetToken = '';
+                setAgentFileSetResult(payload);
+                await fetchOpenClawMutationSafety(payload);
+                await fetchOpenClawConfigFilesOverview();
+                updateOpenClawWriteButtons();
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') showToast('执行文件写入失败', 'error');
+                updateOpenClawWriteButtons();
             }
         }
 
@@ -1920,14 +2298,35 @@
                     <pre class="json-block">${escapeHtml(JSON.stringify(previewPayload, null, 2))}</pre>
                 </details>
             ` : '';
+            const tokens = payload.confirmation_tokens || {};
+            const selectedAction = document.getElementById('openclawMutationActionSelect')?.value || '';
+            const requirements = payload.mutation_action_requirements || {};
+            const guide = requirements[selectedAction] || {};
+            const guideBlock = selectedAction ? `
+                <div class="warning-box" style="margin-top:10px;">
+                    <strong>防误操作提示：${escapeHtml(selectedAction)}</strong>
+                    <ul style="margin:8px 0 0 18px;">
+                        <li>必填参数：${escapeHtml((guide.required_params || []).join(', ') || '-')}</li>
+                        <li>风险点：${escapeHtml(guide.risk || '-')}</li>
+                        <li>二次确认字段：${escapeHtml((guide.confirmation_fields || []).join(', ') || '-')}</li>
+                        <li>安全保护：${escapeHtml((guide.safeguards || []).join('；') || '-')}</li>
+                        ${(guide.constraints || []).length ? `<li>约束：${escapeHtml((guide.constraints || []).join('；'))}</li>` : ''}
+                    </ul>
+                </div>
+            ` : '';
             el.innerHTML = `
                 <ul class="summary-list">
                     <li><strong>写入已启用:</strong> ${payload.mutations_enabled ? '是' : '否'}</li>
                     <li><strong>功能开关:</strong> ${escapeHtml(payload.feature_flag_env || '-')}</li>
-                    <li><strong>待确认令牌:</strong> ${escapeHtml(payload.pending_confirmation_count ?? 0)}</li>
+                    <li><strong>确认令牌生命周期:</strong> TTL ${escapeHtml(tokens.ttl_seconds ?? payload.confirmation_ttl_seconds ?? '-')} 秒；一次性使用 ${tokens.one_time_use ? '是' : '否'}</li>
+                    <li><strong>待确认令牌:</strong> ${escapeHtml(tokens.pending ?? payload.pending_confirmation_count ?? 0)}</li>
+                    <li><strong>令牌总数/已用:</strong> ${escapeHtml(tokens.total ?? 0)} / ${escapeHtml(tokens.used ?? 0)}</li>
+                    <li><strong>过期清理:</strong> 本次清理 ${escapeHtml(tokens.purged_expired ?? 0)}；清理前过期 ${escapeHtml(tokens.expired_before_cleanup ?? 0)}</li>
                     <li><strong>审计记录:</strong> ${escapeHtml(payload.audit_count ?? 0)}</li>
                     <li><strong>支持动作:</strong> ${escapeHtml((payload.supported_actions || []).join(', '))}</li>
                 </ul>
+                <div class="status-subtext" style="margin-top:8px;">确认令牌会绑定 action、UID 与参数摘要；使用后立即失效，过期本地记录会在刷新安全状态或签发/校验令牌时清理。</div>
+                ${guideBlock}
                 <details class="json-details">
                     <summary>安全状态 JSON</summary>
                     <pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
@@ -1936,12 +2335,88 @@
             `;
         }
 
+        function mutationAuditSummary(record) {
+            return {
+                id: record.id || '',
+                ts: record.ts || 0,
+                action: record.action || '',
+                uid: record.uid || '',
+                stage: record.stage || '',
+                ok: !!record.ok,
+                params_digest: record.params_digest || '',
+                params: record.params || {},
+                result: record.result || ''
+            };
+        }
+
+        function renderOpenClawMutationAudit(payload) {
+            const el = document.getElementById('openclawMutationAudit');
+            const records = payload.records || [];
+            lastMutationAuditRecords = records;
+            if (!records.length) {
+                el.innerHTML = '暂无写入审计记录。生成演练预览或确认令牌后会在这里显示。';
+                return;
+            }
+            const rows = records.map((record, idx) => {
+                const digest = record.params_digest ? `${String(record.params_digest).slice(0, 12)}…` : '-';
+                return `
+                    <tr>
+                        <td>${escapeHtml(formatTs(record.ts))}</td>
+                        <td>${escapeHtml(record.action || '-')}</td>
+                        <td>${escapeHtml(record.uid || '-')}</td>
+                        <td>${escapeHtml(record.stage || '-')}</td>
+                        <td>${record.ok ? '是' : '否'}</td>
+                        <td><code>${escapeHtml(digest)}</code></td>
+                        <td>${escapeHtml(record.result || '-')}</td>
+                        <td style="white-space:nowrap;"><button class="btn btn-outline btn-small" onclick="copyOpenClawMutationAudit(${idx})">复制审计摘要</button></td>
+                    </tr>
+                `;
+            }).join('');
+            el.innerHTML = `
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr><th>时间</th><th>动作</th><th>UID</th><th>阶段</th><th>成功</th><th>参数摘要</th><th>结果</th><th>操作</th></tr></thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+                <details class="json-details">
+                    <summary>写入审计 JSON</summary>
+                    <pre class="json-block">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+                </details>
+            `;
+        }
+
+        async function fetchOpenClawMutationAudit() {
+            if (webAuthEnabled && !webAuthReady) return;
+            try {
+                const res = await apiFetch('/api/openclaw/mutations/audit?limit=30');
+                const payload = await res.json();
+                renderOpenClawMutationAudit(payload);
+            } catch (e) {
+                if (e.message !== 'UNAUTHORIZED') {
+                    document.getElementById('openclawMutationAudit').textContent = '写入审计记录请求失败';
+                }
+            }
+        }
+
+        async function copyOpenClawMutationAudit(index) {
+            const record = lastMutationAuditRecords[index];
+            if (!record) return;
+            try {
+                await copyTextToClipboard(JSON.stringify(mutationAuditSummary(record), null, 2));
+                showToast('审计摘要已复制');
+            } catch (e) {
+                showToast('复制失败，请展开 JSON 手动复制', 'error');
+            }
+        }
+
         async function fetchOpenClawMutationSafety(previewPayload) {
             if (webAuthEnabled && !webAuthReady) return;
             try {
                 const res = await apiFetch('/api/openclaw/mutations/safety');
                 const payload = await res.json();
                 renderOpenClawMutationSafety(payload, previewPayload);
+                fetchOpenClawMutationAudit();
             } catch (e) {
                 if (e.message !== 'UNAUTHORIZED') {
                     document.getElementById('openclawMutationSafety').textContent = '写入安全状态请求失败';
@@ -1952,13 +2427,9 @@
         async function previewOpenClawMutation() {
             if (webAuthEnabled && !webAuthReady) return;
             const action = document.getElementById('openclawMutationActionSelect').value;
-            const uid = document.getElementById('openclawUidSelect').value || '';
+            const uid = getOpenClawSelectedUid();
             try {
-                const res = await apiFetch('/api/openclaw/mutations/preview', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ action, uid, params: { source: 'webui-dry-run' } })
-                });
+                const res = await postJson('/api/openclaw/mutations/preview', { action, uid, params: { source: 'webui-dry-run' } });
                 const preview = await res.json();
                 await fetchOpenClawMutationSafety(preview);
             } catch (e) {
@@ -1992,6 +2463,7 @@
 
         async function initializeDashboard() {
             await Promise.all([fetchStatus(), fetchRequestNodes(), fetchUsers()]);
+            updateOpenClawWriteButtons();
             startStatusPolling();
         }
 

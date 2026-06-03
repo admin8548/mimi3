@@ -34,6 +34,46 @@ SUPPORTED_MUTATION_ACTIONS: tuple[str, ...] = (
     "agents.files.set",
 )
 
+MUTATION_ACTION_REQUIREMENTS: dict[str, dict[str, Any]] = {
+    "sessions.compact": {
+        "required_params": ["key"],
+        "confirmation_fields": ["uid", "key", "params_digest"],
+        "risk": "压缩指定会话上下文，可能改变后续对话可用历史。",
+        "safeguards": ["requires confirmation token", "audited execute_start/execute_done"],
+    },
+    "cron.run": {
+        "required_params": ["id"],
+        "confirmation_fields": ["uid", "id", "params_digest"],
+        "risk": "立即触发指定定时任务运行，可能产生异步副作用。",
+        "safeguards": ["requires confirmation token", "audited execute_start/execute_done"],
+    },
+    "browser.navigate": {
+        "required_params": ["url"],
+        "constraints": ["only http://, https://, and about:blank are allowed"],
+        "confirmation_fields": ["uid", "url", "params_digest"],
+        "risk": "改变沙箱浏览器当前导航状态。",
+        "safeguards": ["URL scheme allowlist", "requires confirmation token"],
+    },
+    "config.patch": {
+        "required_params": ["raw_sha256", "baseHash", "backup_id"],
+        "confirmation_fields": ["uid", "backup_id", "baseHash", "raw_sha256", "params_digest"],
+        "risk": "写入 OpenClaw raw 配置；错误 raw 可能影响后续 OpenClaw 行为。",
+        "safeguards": ["metadata backup preview required", "baseHash required", "post-write config.get hash verification"],
+    },
+    "agents.files.set": {
+        "required_params": ["agentId", "name", "content_sha256", "backup_id"],
+        "constraints": ["allowed names: AGENTS.md, SOUL.md, TOOLS.md, USER.md, HEARTBEAT.md"],
+        "confirmation_fields": ["uid", "agentId", "name", "backup_id", "content_sha256", "params_digest"],
+        "risk": "写入指定智能体工作区文件；错误内容可能影响智能体行为。",
+        "safeguards": ["metadata backup preview required", "allowed filename list", "content hash bound to token"],
+    },
+}
+
+
+def mutation_action_requirements() -> dict[str, dict[str, Any]]:
+    return json.loads(json.dumps(MUTATION_ACTION_REQUIREMENTS, ensure_ascii=False))
+
+
 _audit_records: deque[dict[str, Any]] = deque(maxlen=MAX_AUDIT_RECORDS)
 _confirmation_tokens: dict[str, dict[str, Any]] = {}
 
@@ -121,6 +161,7 @@ def build_mutation_preview(action: str, uid: str = "", params: Any = None) -> di
         "action": action,
         "uid": uid,
         "supported_actions": list(SUPPORTED_MUTATION_ACTIONS),
+        "action_requirements": mutation_action_requirements().get(action, {}),
         "confirmation_required": True,
         "confirmation_available": enabled and valid_action,
         "would_execute": False,
@@ -132,6 +173,7 @@ def build_mutation_preview(action: str, uid: str = "", params: Any = None) -> di
 
 
 def create_confirmation_token(action: str, uid: str = "", params: Any = None) -> dict[str, Any]:
+    purge_expired_confirmation_tokens()
     preview = build_mutation_preview(action, uid, params)
     if not preview["ok"]:
         return {**preview, "token": ""}
@@ -158,6 +200,7 @@ def create_confirmation_token(action: str, uid: str = "", params: Any = None) ->
 
 
 def verify_confirmation_token(token: str, *, action: str, uid: str = "", params: Any = None) -> bool:
+    purge_expired_confirmation_tokens()
     token_hash = _hash_token(str(token or ""))
     record = _confirmation_tokens.get(token_hash)
     if not record or record.get("used"):
@@ -174,19 +217,66 @@ def verify_confirmation_token(token: str, *, action: str, uid: str = "", params:
     return True
 
 
+def purge_expired_confirmation_tokens(now: int | None = None) -> int:
+    """Remove expired confirmation-token records and return the number purged."""
+
+    current_ts = int(time.time()) if now is None else int(now)
+    expired_hashes = [
+        token_hash
+        for token_hash, record in _confirmation_tokens.items()
+        if int(record.get("expires_at", 0)) < current_ts
+    ]
+    for token_hash in expired_hashes:
+        _confirmation_tokens.pop(token_hash, None)
+    return len(expired_hashes)
+
+
+def confirmation_token_counts(now: int | None = None) -> dict[str, int]:
+    current_ts = int(time.time()) if now is None else int(now)
+    total = len(_confirmation_tokens)
+    used = sum(1 for item in _confirmation_tokens.values() if item.get("used"))
+    expired = sum(1 for item in _confirmation_tokens.values() if int(item.get("expires_at", 0)) < current_ts)
+    pending = sum(
+        1
+        for item in _confirmation_tokens.values()
+        if not item.get("used") and int(item.get("expires_at", 0)) >= current_ts
+    )
+    return {
+        "total": total,
+        "pending": pending,
+        "used": used,
+        "expired": expired,
+    }
+
+
 def build_mutation_safety_status() -> dict[str, Any]:
+    now = int(time.time())
+    before_cleanup = confirmation_token_counts(now)
+    purged_expired = purge_expired_confirmation_tokens(now)
+    token_counts = confirmation_token_counts(now)
+    ttl_seconds = confirmation_ttl_seconds()
     return {
         "ok": True,
-        "generated_at": int(time.time()),
+        "generated_at": now,
         "mutations_enabled": mutations_enabled(),
         "feature_flag_env": MUTATIONS_ENABLED_ENV,
-        "confirmation_ttl_seconds": confirmation_ttl_seconds(),
+        "confirmation_ttl_seconds": ttl_seconds,
+        "confirmation_tokens": {
+            **token_counts,
+            "expired_before_cleanup": before_cleanup["expired"],
+            "purged_expired": purged_expired,
+            "ttl_seconds": ttl_seconds,
+            "one_time_use": True,
+        },
         "supported_actions": list(SUPPORTED_MUTATION_ACTIONS),
+        "mutation_action_requirements": mutation_action_requirements(),
         "audit_count": len(_audit_records),
-        "pending_confirmation_count": sum(1 for item in _confirmation_tokens.values() if not item.get("used") and int(item.get("expires_at", 0)) >= int(time.time())),
+        "pending_confirmation_count": token_counts["pending"],
         "requirements": {
             "feature_flag": "must be true",
             "confirmation_token": "required for every mutating operation",
+            "confirmation_token_one_time_use": "tokens are single-use and bound to action, uid, and params digest",
+            "confirmation_token_ttl": f"tokens expire after {ttl_seconds} seconds and expired local records are purged from safety status",
             "audit": "preview and execution stages must be recorded",
             "dry_run": "preview must be shown before execution",
         },

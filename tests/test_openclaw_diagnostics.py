@@ -75,12 +75,16 @@ class FakeDiagnosticsClient:
             return {"status": "enqueued", "id": params.get("id"), "runId": "run1"}
         if method == "config.get":
             return {"raw": "setting=true", "baseHash": "hash", "token": "secret"}
+        if method == "config.patch":
+            return {"status": "patched", "baseHash": params.get("baseHash")}
         if method == "config.schema":
             return {"schema": {"type": "object"}}
         if method == "agents.files.list":
             return {"files": [{"name": "AGENTS.md"}, {"name": "SOUL.md"}]}
         if method == "agents.files.get":
             return {"name": params.get("name"), "content": "hello", "secret": "hidden"}
+        if method == "agents.files.set":
+            return {"status": "saved", "name": params.get("name")}
         return {"method": method, "token": "secret", "value": 1}
 
     async def close(self):
@@ -603,6 +607,14 @@ class OpenClawBackupDiffPreviewTests(unittest.TestCase):
         self.assertIn("agents.files.get", methods)
         self.assertNotIn("agents.files.set", methods)
 
+    def test_backup_diff_records_endpoint_shape(self):
+        expected = {"count": 1, "records": [{"id": "b1", "target": {"type": "config"}}]}
+        with patch("mimo2api.web_service.list_backup_diff_records", return_value=expected) as mocked:
+            resp = TestClient(app).get("/api/openclaw/backup-diff/records?limit=5")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), expected)
+        mocked.assert_called_once_with(limit=5)
+
     def test_backup_diff_endpoint_shape(self):
         expected = {
             "ok": True,
@@ -630,6 +642,220 @@ class OpenClawBackupDiffPreviewTests(unittest.TestCase):
         self.assertEqual(resp.json(), expected)
 
 
+
+class OpenClawConfigPatchMutationTests(unittest.TestCase):
+    def setUp(self):
+        from mimo2api.openclaw_backup_diff import clear_backup_diff_records
+        from mimo2api.openclaw_mutation_safety import clear_mutation_safety_state
+
+        clear_backup_diff_records()
+        clear_mutation_safety_state()
+        os.environ.pop("MIMO_OPENCLAW_MUTATIONS_ENABLED", None)
+        FakeDiagnosticsClient.calls = []
+        FakeDiagnosticsClient.connect_calls = 0
+        FakeDiagnosticsClient.close_calls = 0
+        FakeDiagnosticsClient.fail_sections = set()
+
+    def tearDown(self):
+        os.environ.pop("MIMO_OPENCLAW_MUTATIONS_ENABLED", None)
+
+    def test_config_patch_blocked_when_disabled(self):
+        from mimo2api.openclaw_config_mutations import execute_config_patch
+
+        payload = asyncio.run(
+            execute_config_patch(
+                uid="u1",
+                raw="setting=true",
+                base_hash="hash",
+                backup_id="backup",
+                confirmation_token="token",
+                client_factory=FakeDiagnosticsClient,
+            )
+        )
+        self.assertFalse(payload["ok"])
+        self.assertIn("disabled", payload["errors"][0]["message"])
+        self.assertEqual(FakeDiagnosticsClient.calls, [])
+
+    def test_config_patch_requires_base_hash(self):
+        from mimo2api.openclaw_config_mutations import execute_config_patch
+
+        os.environ["MIMO_OPENCLAW_MUTATIONS_ENABLED"] = "true"
+        payload = asyncio.run(
+            execute_config_patch(
+                uid="u1",
+                raw="setting=true",
+                base_hash="",
+                backup_id="backup",
+                confirmation_token="token",
+                client_factory=FakeDiagnosticsClient,
+            )
+        )
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["errors"][0]["message"], "baseHash required")
+        self.assertEqual(FakeDiagnosticsClient.calls, [])
+
+    def test_config_patch_executes_with_backup_confirmation_and_verify_get(self):
+        from mimo2api.openclaw_backup_diff import build_openclaw_backup_diff_preview
+        from mimo2api.openclaw_config_mutations import execute_config_patch, raw_sha256
+        from mimo2api.openclaw_mutation_safety import create_confirmation_token
+
+        os.environ["MIMO_OPENCLAW_MUTATIONS_ENABLED"] = "true"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            write_user(root, "u1")
+            backup = asyncio.run(
+                build_openclaw_backup_diff_preview(
+                    uid="u1",
+                    target_type="config",
+                    proposed_content="setting=true",
+                    users_dir=root,
+                    client_factory=FakeDiagnosticsClient,
+                )
+            )
+            self.assertEqual(backup["target"]["baseHash"], "hash")
+            params = {
+                "raw_sha256": raw_sha256("setting=true"),
+                "baseHash": "hash",
+                "backup_id": backup["backup"]["id"],
+            }
+            token_payload = create_confirmation_token("config.patch", uid="u1", params=params)
+            self.assertTrue(token_payload["ok"])
+            payload = asyncio.run(
+                execute_config_patch(
+                    uid="u1",
+                    raw="setting=true",
+                    base_hash="hash",
+                    backup_id=backup["backup"]["id"],
+                    confirmation_token=token_payload["token"],
+                    users_dir=root,
+                    client_factory=FakeDiagnosticsClient,
+                )
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["payload"]["status"], "patched")
+        self.assertTrue(payload["verify"]["matches_proposed"])
+        methods = [call[0] for call in FakeDiagnosticsClient.calls]
+        self.assertEqual(methods.count("config.get"), 2)
+        self.assertIn("config.patch", methods)
+
+    def test_config_patch_endpoint_exists_and_blocks_by_default(self):
+        resp = TestClient(app).post(
+            "/api/openclaw/config/patch",
+            json={
+                "uid": "u1",
+                "raw": "setting=true",
+                "baseHash": "hash",
+                "backup_id": "backup",
+                "confirmation_token": "bad",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["ok"])
+
+
+class OpenClawAgentFileSetMutationTests(unittest.TestCase):
+    def setUp(self):
+        from mimo2api.openclaw_backup_diff import clear_backup_diff_records
+        from mimo2api.openclaw_mutation_safety import clear_mutation_safety_state
+
+        clear_backup_diff_records()
+        clear_mutation_safety_state()
+        os.environ.pop("MIMO_OPENCLAW_MUTATIONS_ENABLED", None)
+        FakeDiagnosticsClient.calls = []
+        FakeDiagnosticsClient.close_calls = 0
+
+    def tearDown(self):
+        os.environ.pop("MIMO_OPENCLAW_MUTATIONS_ENABLED", None)
+
+    def test_agents_files_set_blocked_when_disabled(self):
+        from mimo2api.openclaw_agent_file_mutations import execute_agents_files_set
+
+        payload = asyncio.run(
+            execute_agents_files_set(
+                uid="u1",
+                agent_id="main",
+                file_name="AGENTS.md",
+                content="hello",
+                backup_id="backup",
+                confirmation_token="token",
+                client_factory=FakeDiagnosticsClient,
+            )
+        )
+        self.assertFalse(payload["ok"])
+        self.assertIn("disabled", payload["errors"][0]["message"])
+        self.assertEqual(FakeDiagnosticsClient.calls, [])
+
+    def test_agents_files_set_requires_allowed_file_name(self):
+        from mimo2api.openclaw_agent_file_mutations import validate_agent_file_set_request
+
+        self.assertFalse(validate_agent_file_set_request("main", "AGENTS.md", "x", "b"))
+        self.assertTrue(validate_agent_file_set_request("main", "../bad", "x", "b"))
+        self.assertTrue(validate_agent_file_set_request("main", "UNKNOWN.md", "x", "b"))
+
+    def test_agents_files_set_executes_with_backup_and_confirmation(self):
+        from mimo2api.openclaw_agent_file_mutations import content_sha256, execute_agents_files_set
+        from mimo2api.openclaw_backup_diff import build_openclaw_backup_diff_preview
+        from mimo2api.openclaw_mutation_safety import create_confirmation_token
+
+        os.environ["MIMO_OPENCLAW_MUTATIONS_ENABLED"] = "true"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            write_user(root, "u1")
+            backup = asyncio.run(
+                build_openclaw_backup_diff_preview(
+                    uid="u1",
+                    target_type="agent_file",
+                    agent_id="main",
+                    file_name="AGENTS.md",
+                    proposed_content="new content",
+                    users_dir=root,
+                    client_factory=FakeDiagnosticsClient,
+                )
+            )
+            params = {
+                "agentId": "main",
+                "name": "AGENTS.md",
+                "content_sha256": content_sha256("new content"),
+                "backup_id": backup["backup"]["id"],
+            }
+            token_payload = create_confirmation_token("agents.files.set", uid="u1", params=params)
+            self.assertTrue(token_payload["ok"])
+            payload = asyncio.run(
+                execute_agents_files_set(
+                    uid="u1",
+                    agent_id="main",
+                    file_name="AGENTS.md",
+                    content="new content",
+                    backup_id=backup["backup"]["id"],
+                    confirmation_token=token_payload["token"],
+                    users_dir=root,
+                    client_factory=FakeDiagnosticsClient,
+                )
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["payload"]["status"], "saved")
+        methods = [call[0] for call in FakeDiagnosticsClient.calls]
+        self.assertIn("agents.files.get", methods)
+        self.assertIn("agents.files.set", methods)
+
+    def test_agents_files_set_endpoint_exists_and_blocks_by_default(self):
+        resp = TestClient(app).post(
+            "/api/openclaw/agents/files/set",
+            json={
+                "uid": "u1",
+                "agent_id": "main",
+                "file_name": "AGENTS.md",
+                "content": "x",
+                "backup_id": "backup",
+                "confirmation_token": "bad",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["ok"])
+
+
 class OpenClawMutationSafetyTests(unittest.TestCase):
     def setUp(self):
         from mimo2api.openclaw_mutation_safety import clear_mutation_safety_state
@@ -650,12 +876,17 @@ class OpenClawMutationSafetyTests(unittest.TestCase):
         status = build_mutation_safety_status()
         self.assertFalse(status["mutations_enabled"])
         self.assertIn("sessions.compact", status["supported_actions"])
+        self.assertIn("config.patch", status["mutation_action_requirements"])
+        self.assertIn("baseHash", status["mutation_action_requirements"]["config.patch"]["required_params"])
+        self.assertEqual(status["confirmation_tokens"]["pending"], 0)
+        self.assertTrue(status["confirmation_tokens"]["one_time_use"])
 
         preview = build_mutation_preview("sessions.compact", uid="u1", params={"key": "agent:main:main", "token": "secret"})
         self.assertTrue(preview["ok"])
         self.assertFalse(preview["would_execute"])
         self.assertFalse(preview["confirmation_available"])
         self.assertEqual(preview["params"]["token"], "<redacted>")
+        self.assertEqual(preview["action_requirements"]["required_params"], ["key"])
 
         audit = list_mutation_audit()
         self.assertEqual(audit["count"], 1)
@@ -679,6 +910,33 @@ class OpenClawMutationSafetyTests(unittest.TestCase):
         self.assertTrue(payload["token"])
         self.assertTrue(verify_confirmation_token(payload["token"], action="cron.run", uid="u1", params=params))
         self.assertFalse(verify_confirmation_token(payload["token"], action="cron.run", uid="u1", params=params))
+
+    def test_expired_confirmation_tokens_are_purged_from_status(self):
+        from mimo2api import openclaw_mutation_safety as safety
+
+        safety._confirmation_tokens["expired"] = {
+            "action": "cron.run",
+            "uid": "u1",
+            "params_digest": "d",
+            "expires_at": 0,
+            "used": False,
+        }
+        safety._confirmation_tokens["used"] = {
+            "action": "cron.run",
+            "uid": "u1",
+            "params_digest": "d",
+            "expires_at": 9999999999,
+            "used": True,
+        }
+
+        status = safety.build_mutation_safety_status()
+
+        self.assertEqual(status["confirmation_tokens"]["purged_expired"], 1)
+        self.assertEqual(status["confirmation_tokens"]["expired_before_cleanup"], 1)
+        self.assertEqual(status["confirmation_tokens"]["used"], 1)
+        self.assertEqual(status["confirmation_tokens"]["pending"], 0)
+        self.assertNotIn("expired", safety._confirmation_tokens)
+        self.assertIn("used", safety._confirmation_tokens)
 
     def test_mutation_safety_endpoints(self):
         resp = TestClient(app).get("/api/openclaw/mutations/safety")
@@ -988,7 +1246,16 @@ class WebUIOpenClawStaticTests(unittest.TestCase):
         self.assertIn("/api/openclaw/config-files/overview", html)
         self.assertIn("openclawMutationSafety", html)
         self.assertIn("/api/openclaw/mutations/safety", html)
+        self.assertIn("确认令牌生命周期", html)
+        self.assertIn("过期清理", html)
+        self.assertIn("防误操作提示", html)
+        self.assertIn("必填参数", html)
+        self.assertIn("二次确认字段", html)
         self.assertIn("/api/openclaw/mutations/preview", html)
+        self.assertIn("openclawMutationAudit", html)
+        self.assertIn("/api/openclaw/mutations/audit", html)
+        self.assertIn("copyOpenClawMutationAudit", html)
+        self.assertIn("复制审计摘要", html)
         self.assertIn("openclawCompactResult", html)
         self.assertIn("/api/openclaw/sessions/compact", html)
         self.assertIn("openclawCronRunResult", html)
@@ -997,3 +1264,45 @@ class WebUIOpenClawStaticTests(unittest.TestCase):
         self.assertIn("/api/openclaw/browser/navigate", html)
         self.assertIn("openclawBackupDiffPreview", html)
         self.assertIn("/api/openclaw/backup-diff/preview", html)
+        self.assertIn("openclawBackupDiffRecords", html)
+        self.assertIn("/api/openclaw/backup-diff/records", html)
+        self.assertIn("copyOpenClawBackupRecovery", html)
+        self.assertIn("复制恢复参数", html)
+        self.assertIn("openclawConfigPatchResult", html)
+        self.assertIn("openclawConfigPatchTokenBtn", html)
+        self.assertIn("openclawConfigPatchExecuteBtn", html)
+        self.assertIn("安全操作步骤", html)
+        self.assertIn("高风险写入必须按", html)
+        self.assertIn("MIMO_OPENCLAW_MUTATIONS_ENABLED=false", html)
+        self.assertIn("一次性确认令牌", html)
+        self.assertIn("updateOpenClawWriteButtons", html)
+        self.assertIn("handleOpenClawWriteInputChanged", html)
+        self.assertIn("renderOpenClawJsonResult", html)
+        self.assertIn("renderOpenClawWarningBox", html)
+        self.assertIn("formatOpenClawErrors", html)
+        self.assertIn("postJson", html)
+        self.assertIn("maskIssuedToken", html)
+        self.assertIn("getOpenClawSelectedUid", html)
+        self.assertIn("formatOpenClawUid", html)
+        self.assertIn("/api/openclaw/config/patch", html)
+        self.assertIn("requestConfigPatchToken", html)
+        self.assertIn("executeConfigPatch", html)
+        self.assertIn("openclawAgentFileSetResult", html)
+        self.assertIn("openclawAgentFileSetTokenBtn", html)
+        self.assertIn("openclawAgentFileSetExecuteBtn", html)
+        self.assertIn("/api/openclaw/agents/files/set", html)
+
+    def test_openclaw_chinese_operation_guide_exists(self):
+        guide = Path("docs/guides/openclaw_webui_operations.md").read_text("utf-8")
+        self.assertIn("OpenClaw WebUI 中文操作手册", guide)
+        self.assertIn("写入前预览", guide)
+        self.assertIn("MIMO_OPENCLAW_MUTATIONS_ENABLED=false", guide)
+        self.assertIn("不要开放 `config.apply` / `config.set`", guide)
+
+
+class OpenClawGuideDocsTests(unittest.TestCase):
+    def test_openclaw_webui_operation_guide_exists(self):
+        guide = Path("docs/guides/openclaw_webui_operations.md").read_text("utf-8")
+        self.assertIn("OpenClaw WebUI 中文操作手册", guide)
+        self.assertIn("预览 → 令牌 → 二次确认 → 执行 → 审计", guide)
+        self.assertIn("MIMO_OPENCLAW_MUTATIONS_ENABLED=false", guide)
