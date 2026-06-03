@@ -11,6 +11,10 @@ services:
     ports:
       - "${SERVER_PORT:-8001}:${SERVER_PORT:-8000}"
     volumes:
+      # Bind-mount source code so a container restart is enough for Python code changes.
+      # Rebuild is still required for dependency/base-image changes.
+      - ./main.py:/app/main.py:ro
+      - ./mimo2api:/app/mimo2api:ro
       - ./users:/app/users
       - ./logs:/app/logs
       - ./data:/app/data
