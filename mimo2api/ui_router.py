@@ -48,7 +48,14 @@ async def webui_page():
     ui_path = os.path.join(os.path.dirname(__file__), "webui.html")
     if os.path.exists(ui_path):
         with open(ui_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+            return HTMLResponse(
+                content=f.read(),
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
     return Response("webui.html not found", status_code=404)
 
 @router.get("/api/system/status")

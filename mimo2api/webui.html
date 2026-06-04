@@ -954,7 +954,7 @@
         }
 
         async function fetchSession() {
-            const res = await fetch('/api/auth/session', { credentials: 'same-origin' });
+            const res = await fetch('/api/auth/session', { credentials: 'same-origin', cache: 'no-store' });
             if (!res.ok) {
                 throw new Error('获取登录状态失败');
             }
@@ -967,7 +967,15 @@
         }
 
         async function apiFetch(url, options = {}) {
-            const opts = { credentials: 'same-origin', ...options };
+            const opts = {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                ...options,
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    ...(options.headers || {}),
+                },
+            };
             const res = await fetch(url, opts);
             if (res.status === 401) {
                 const wasAuthenticated = webAuthReady;
@@ -1128,6 +1136,7 @@
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     credentials: 'same-origin',
+                    cache: 'no-store',
                     body: JSON.stringify({ username, password })
                 });
                 const data = await res.json();
@@ -1149,7 +1158,8 @@
             try {
                 await fetch('/api/auth/logout', {
                     method: 'POST',
-                    credentials: 'same-origin'
+                    credentials: 'same-origin',
+                    cache: 'no-store'
                 });
             } finally {
                 webAuthReady = false;
