@@ -17,6 +17,7 @@ import time
 import asyncio
 import logging
 import uuid
+import random
 from textwrap import dedent
 from pathlib import Path
 from urllib.parse import quote
@@ -81,11 +82,87 @@ HOLD_ON_INJECTION_FAILURE = get_env_bool("MIMO_HOLD_ON_INJECTION_FAILURE", True)
 BRIDGE_CONNECT_TIMEOUT_SECONDS = get_env_int("MIMO_BRIDGE_CONNECT_TIMEOUT_SECONDS", 90, min_value=1)
 CREATE_WAIT_TIMEOUT_SECONDS = get_env_int("MIMO_CLAW_CREATE_WAIT_TIMEOUT_SECONDS", 420, min_value=60)
 CREATE_429_BACKOFF_SECONDS = get_env_int("MIMO_CLAW_CREATE_429_BACKOFF_SECONDS", 10, min_value=10)
+CREATE_GLOBAL_CONCURRENCY = get_env_int("MIMO_CLAW_CREATE_GLOBAL_CONCURRENCY", 32, min_value=1, max_value=64)
+CREATE_SHARED_COOLDOWN = get_env_bool("MIMO_CLAW_CREATE_SHARED_COOLDOWN", False)
+CREATE_GLOBAL_BACKOFF_BASE_SECONDS = get_env_int(
+    "MIMO_CLAW_CREATE_GLOBAL_BACKOFF_BASE_SECONDS",
+    max(60, CREATE_429_BACKOFF_SECONDS),
+    min_value=10,
+)
+CREATE_GLOBAL_BACKOFF_MAX_SECONDS = get_env_int("MIMO_CLAW_CREATE_GLOBAL_BACKOFF_MAX_SECONDS", 300, min_value=10)
+CREATE_GLOBAL_BACKOFF_FIXED_SECONDS = get_env_int("MIMO_CLAW_CREATE_GLOBAL_BACKOFF_FIXED_SECONDS", 30, min_value=0)
+CREATE_BACKOFF_JITTER_SECONDS = get_env_int("MIMO_CLAW_CREATE_BACKOFF_JITTER_SECONDS", 30, min_value=0)
+CREATE_SUCCESS_SPACING_SECONDS = get_env_int("MIMO_CLAW_CREATE_SUCCESS_SPACING_SECONDS", 15, min_value=0)
+CREATE_FAILED_RETRY_SECONDS = get_env_int("MIMO_CLAW_CREATE_FAILED_RETRY_SECONDS", 10, min_value=5)
 AGENT_ACCEPT_TIMEOUT_SECONDS = get_env_int("MIMO_AGENT_ACCEPT_TIMEOUT_SECONDS", 60, min_value=5)
 INJECTION_REFUSAL_BACKOFF_SECONDS = get_env_int("MIMO_INJECTION_REFUSAL_BACKOFF_SECONDS", 600, min_value=30)
 LEASE_DRAIN_MARGIN_SECONDS = get_env_int("MIMO_LEASE_DRAIN_MARGIN_SECONDS", 900, min_value=0)
 LEASE_REBUILD_BUFFER_SECONDS = get_env_int("MIMO_LEASE_REBUILD_BUFFER_SECONDS", 600, min_value=0)
+NATURAL_EXPIRE_BEFORE_RECREATE = get_env_bool("MIMO_NATURAL_EXPIRE_BEFORE_RECREATE", True)
+PROACTIVE_DESTROY_REMAIN_SECONDS = get_env_int("MIMO_PROACTIVE_DESTROY_REMAIN_SECONDS", 180, min_value=0)
 BRIDGE_BOOTSTRAP_TOKEN = os.getenv("MIMO_BRIDGE_BOOTSTRAP_TOKEN", "").strip()
+
+_create_semaphore = asyncio.Semaphore(CREATE_GLOBAL_CONCURRENCY)
+_create_backoff_lock = asyncio.Lock()
+_create_global_cooldown_until = 0.0
+_create_uid_cooldown_until: dict[str, float] = {}
+_create_uid_429_attempts: dict[str, int] = {}
+
+
+async def wait_for_create_budget(uid: str, logger_obj: logging.Logger) -> None:
+    """Honor create cooldowns; by default each UID races independently."""
+    uid = str(uid or "")
+    while True:
+        async with _create_backoff_lock:
+            now = time.time()
+            cooldown_until = _create_uid_cooldown_until.get(uid, 0.0)
+            if CREATE_SHARED_COOLDOWN:
+                cooldown_until = max(_create_global_cooldown_until, cooldown_until)
+            delay = max(0.0, cooldown_until - now)
+        if delay <= 0:
+            return
+        scope = "全局/UID" if CREATE_SHARED_COOLDOWN else "UID"
+        logger_obj.warning(f"创建资源处于{scope}冷却中，等待 {int(delay)}s 后再尝试 create。")
+        await asyncio.sleep(min(delay, 60))
+
+
+async def note_create_rate_limited(uid: str, logger_obj: logging.Logger, detail: str = "") -> int:
+    """Record a platform capacity 429 and apply global/per-UID cooldown."""
+    global _create_global_cooldown_until
+    uid = str(uid or "")
+    async with _create_backoff_lock:
+        attempts = min(8, _create_uid_429_attempts.get(uid, 0) + 1)
+        _create_uid_429_attempts[uid] = attempts
+        if CREATE_GLOBAL_BACKOFF_FIXED_SECONDS > 0:
+            delay = CREATE_GLOBAL_BACKOFF_FIXED_SECONDS
+        else:
+            base = max(CREATE_429_BACKOFF_SECONDS, CREATE_GLOBAL_BACKOFF_BASE_SECONDS)
+            raw_delay = min(CREATE_GLOBAL_BACKOFF_MAX_SECONDS, base * (2 ** (attempts - 1)))
+            jitter = random.randint(0, CREATE_BACKOFF_JITTER_SECONDS) if CREATE_BACKOFF_JITTER_SECONDS > 0 else 0
+        delay = int(raw_delay + jitter)
+        until = time.time() + delay
+        _create_uid_cooldown_until[uid] = until
+        if CREATE_SHARED_COOLDOWN:
+            _create_global_cooldown_until = max(_create_global_cooldown_until, until)
+    logger_obj.warning(
+        f"创建资源 429: uid={uid or '<unknown>'}, attempts={attempts}, "
+        f"cooldown={delay}s, detail={_truncate_text(detail, 180)}"
+    )
+    return delay
+
+
+async def note_create_submitted(uid: str) -> None:
+    """Reset UID 429 state and optionally space out successful create submissions."""
+    global _create_global_cooldown_until
+    uid = str(uid or "")
+    async with _create_backoff_lock:
+        _create_uid_429_attempts.pop(uid, None)
+        _create_uid_cooldown_until.pop(uid, None)
+        if CREATE_SHARED_COOLDOWN and CREATE_SUCCESS_SPACING_SECONDS > 0:
+            _create_global_cooldown_until = max(
+                _create_global_cooldown_until,
+                time.time() + CREATE_SUCCESS_SPACING_SECONDS,
+            )
 
 BRIDGE_AGENT_FILES = {
     "SOUL.md": """# SOUL.md - Authorized Sandbox Coding Agent
@@ -583,42 +660,52 @@ class NativeClawClient:
             elif initial_status in {"DESTROYING", "STOPPING"}:
                 self.logger.info(f"检测到实例正在销毁/停止，先等待平台状态稳定: {initial_detail}")
             else:
-                r = await client.post(url_create, cookies=self.cookies, headers=_aistudio_headers(), timeout=20)
-                create_data, create_detail = _response_details(r)
-                if r.status_code == 401:
-                    self.logger.error(f"账户已过期失效: {create_detail}")
-                    return False
-                if r.status_code == 429:
-                    self.logger.error(f"当前 Claw 实例负载过高: {create_detail}")
-                    # NativeClawClient 只负责底层 create/connect；不要在这里调用
-                    # AccountManager._publish_lifecycle（历史补丁误调用会抛
-                    # AttributeError，导致 429 长退避失效并进入 60s 重试风暴）。
-                    if self.uid:
-                        now = time.time()
-                        state.uid_lifecycle[str(self.uid)] = {
-                            "uid": str(self.uid),
-                            "platform_status": "RATE_LIMITED",
-                            "remain_sec": 0,
-                            "expire_at": 0,
-                            "stage": "create_rate_limited",
-                            "reason": str(create_detail or "")[:200],
-                            "updated_at": int(now),
-                        }
-                    self.logger.warning(
-                        f"创建接口触发 429，按 MIMO_CLAW_CREATE_429_BACKOFF_SECONDS "
-                        f"backoff {CREATE_429_BACKOFF_SECONDS}s，避免配额风暴。"
-                    )
-                    # 429 是平台容量/配额限制，不能被 rebuild_event 打断；
-                    # 否则 force-recreate/全局 rebuild 信号会让冷却立即返回，
-                    # 形成多账号 5 秒 create 重试风暴。
-                    await asyncio.sleep(CREATE_429_BACKOFF_SECONDS)
-                    return False
-                if r.status_code >= 400:
-                    self.logger.error(f"创建实例请求失败: {create_detail}")
-                    return False
-                if isinstance(create_data, dict) and create_data.get("code") not in (None, 0):
-                    self.logger.error(f"创建实例接口返回异常: {create_detail}")
-                    return False
+                await wait_for_create_budget(self.uid, self.logger)
+                async with _create_semaphore:
+                    # 其它任务可能在本任务等待 create 槽时刚刚提交 create
+                    # 或触发 429；拿到槽后必须再次检查本 UID 预算。
+                    await wait_for_create_budget(self.uid, self.logger)
+                    # 冷却等待期间其它 manager 可能已经让平台状态进入流转；
+                    # create 前再查一次，避免重复 POST 抢资源。
+                    recheck_status, recheck_detail, recheck_ok = await _status_once(client)
+                    if not recheck_ok:
+                        return False
+                    if recheck_status == "AVAILABLE":
+                        self.logger.info(f"Claw 已处于可用状态，无需重复创建: {recheck_detail}")
+                        return True
+                    if recheck_status in {"CREATING", "STARTING", "PENDING", "DESTROYING", "STOPPING"}:
+                        self.logger.info(f"检测到平台状态 {recheck_status} 已在流转，跳过重复 create 并接管等待: {recheck_detail}")
+                    else:
+                        r = await client.post(url_create, cookies=self.cookies, headers=_aistudio_headers(), timeout=20)
+                        create_data, create_detail = _response_details(r)
+                        if r.status_code == 401:
+                            self.logger.error(f"账户已过期失效: {create_detail}")
+                            return False
+                        if r.status_code == 429:
+                            self.logger.error(f"当前 Claw 实例负载过高: {create_detail}")
+                            # NativeClawClient 只负责底层 create/connect；不要在这里调用
+                            # AccountManager._publish_lifecycle（历史补丁误调用会抛
+                            # AttributeError，导致 429 长退避失效并进入 60s 重试风暴）。
+                            if self.uid:
+                                now = time.time()
+                                state.uid_lifecycle[str(self.uid)] = {
+                                    "uid": str(self.uid),
+                                    "platform_status": "RATE_LIMITED",
+                                    "remain_sec": 0,
+                                    "expire_at": 0,
+                                    "stage": "create_rate_limited",
+                                    "reason": str(create_detail or "")[:200],
+                                    "updated_at": int(now),
+                                }
+                            await note_create_rate_limited(self.uid, self.logger, create_detail)
+                            return False
+                        if r.status_code >= 400:
+                            self.logger.error(f"创建实例请求失败: {create_detail}")
+                            return False
+                        if isinstance(create_data, dict) and create_data.get("code") not in (None, 0):
+                            self.logger.error(f"创建实例接口返回异常: {create_detail}")
+                            return False
+                        await note_create_submitted(self.uid)
             
             # 3. 轮询直到 AVAILABLE
             deadline = time.time() + CREATE_WAIT_TIMEOUT_SECONDS
@@ -1078,6 +1165,35 @@ class AccountManager:
                 self.logger.info(f"探测现有云端实例状态: {st}, 剩余寿命: {remain_sec} 秒")
                 if force_hard_rebuild:
                     self.logger.warning(f"收到 hard rebuild 请求，绕过 AVAILABLE 复用并强制刷新实例: {rebuild_reason}")
+
+                # 平台租约是外部控制面强制回收时，节点内部无法真正续命。
+                # 为了避免“先 destroy 后 create 遇到 429”造成容量空窗，
+                # 默认让低剩余寿命实例进入 drain 并自然过期；调度层会按
+                # MIMO_NODE_MIN_* 阈值逐步停止派发长请求/普通请求。
+                if (
+                    NATURAL_EXPIRE_BEFORE_RECREATE
+                    and (not force_hard_rebuild)
+                    and st == "AVAILABLE"
+                    and PROACTIVE_DESTROY_REMAIN_SECONDS < remain_sec <= LEASE_DRAIN_MARGIN_SECONDS
+                ):
+                    wait_time = max(15, min(remain_sec - PROACTIVE_DESTROY_REMAIN_SECONDS, LEASE_DRAIN_MARGIN_SECONDS))
+                    self._publish_lifecycle(
+                        platform_status=st,
+                        remain_sec=remain_sec,
+                        stage="draining_until_proactive_destroy",
+                        reason="drain until proactive destroy window",
+                    )
+                    self.logger.info(
+                        f"实例剩余寿命 {remain_sec}s 已进入 drain 窗口；"
+                        f"先不主动销毁，等待 {wait_time}s 后进入 "
+                        f"MIMO_PROACTIVE_DESTROY_REMAIN_SECONDS={PROACTIVE_DESTROY_REMAIN_SECONDS}s "
+                        "主动销毁抢购窗口。"
+                    )
+                    await interruptible_sleep(wait_time)
+                    if rebuild_event.is_set():
+                        self.logger.info("🔔 收到重建信号，结束自然过期等待并重新评估。")
+                        rebuild_event.clear()
+                    continue
                 
                 # 若寿命仍高于 drain 阈值且没有 hard rebuild 请求，可复用。
                 # 低于该阈值的实例进入 drain/rebuild，不再把最后几分钟当稳定服务窗口。
@@ -1189,10 +1305,13 @@ class AccountManager:
                 self.logger.info("申请初始化新云端实例容器...")
                 self._publish_lifecycle(platform_status="CREATING", remain_sec=0, stage="creating")
                 if not await self.connect_with_retry(client, max_retries=5, delay=5, create=True):
-                    self.logger.error("全流程首次建联连结都失败，可能由于服务封禁/账户死亡。休眠 1 分钟再试...")
+                    self.logger.error(
+                        "全流程首次建联连结都失败，可能由于服务封禁/账户死亡。"
+                        f"休眠 {CREATE_FAILED_RETRY_SECONDS} 秒再试..."
+                    )
                     self._publish_lifecycle(platform_status="CREATE_FAILED", remain_sec=0, stage="create_failed")
                     await client.close()
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(CREATE_FAILED_RETRY_SECONDS)
                     continue
                 
                 # 3. 可选环境重置。
