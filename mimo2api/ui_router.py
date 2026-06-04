@@ -53,7 +53,26 @@ async def webui_page():
 
 @router.get("/api/system/status")
 async def api_status():
-    return JSONResponse({"active_clients": len(state.active_clients)})
+    now = time.time()
+    healthy_clients = 0
+    dispatchable_clients = 0
+    for client in state.active_clients:
+        ws_id = id(client)
+        health = state.client_health.get(ws_id, {})
+        health_status = health.get("status", "unknown") if isinstance(health, dict) else "unknown"
+        uid = state.client_uids.get(ws_id, "")
+        bad_key_until = float(state.bad_key_uids.get(uid, 0) or 0) if uid else 0
+        cooldown_until = float(state.client_cooldowns.get(ws_id, 0) or 0)
+        if health_status in {"healthy", "unknown"}:
+            healthy_clients += 1
+        if health_status in {"healthy", "unknown"} and bad_key_until <= now and cooldown_until <= now:
+            dispatchable_clients += 1
+    return JSONResponse({
+        "active_clients": len(state.active_clients),
+        "healthy_clients": healthy_clients,
+        "dispatchable_clients": dispatchable_clients,
+        "bad_key_uid_count": sum(1 for until in state.bad_key_uids.values() if until > now),
+    })
 
 
 @router.get("/api/auth/session")
@@ -123,10 +142,11 @@ async def fetch_user_status(data: dict) -> dict:
             if r.status_code == 401:
                 return {**data, "claw_status": "EXPIRED(401)", "remain_sec": 0}
             r_data = r.json()
-            st = r_data.get("data", {}).get("status", "UNKNOWN")
+            st = r_data.get("data", {}).get("status", "")
             expire_ms = r_data.get("data", {}).get("expireTime")
-            remain_sec = max(0, int(int(expire_ms) / 1000 - time.time())) if expire_ms else 0
-            return {**data, "claw_status": st, "remain_sec": remain_sec}
+            expire_at = int(int(expire_ms) / 1000) if expire_ms else 0
+            remain_sec = max(0, int(expire_at - time.time())) if expire_at else 0
+            return {**data, "claw_status": st, "remain_sec": remain_sec, "expire_at": expire_at}
     except Exception:
         return {**data, "claw_status": "ERROR", "remain_sec": 0}
 
@@ -144,8 +164,9 @@ async def api_users_list():
             "userId": data.get("userId"),
             "name": data.get("name"),
             "serviceToken": data.get("serviceToken"),
-            "claw_status": data.get("claw_status", "UNKNOWN"),
-            "remain_sec": data.get("remain_sec", 0)
+            "claw_status": data.get("claw_status", ""),
+            "remain_sec": data.get("remain_sec", 0),
+            "expire_at": data.get("expire_at", 0)
         })
     return JSONResponse({"users": users, "invalid_count": len(invalid_users), "invalid_users": invalid_users})
 

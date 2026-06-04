@@ -552,13 +552,21 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
     for index, client in enumerate(state.active_clients):
         cooldown_until = state.client_cooldowns.get(id(client), 0)
         cooldown_reason = state.client_cooldown_reasons.get(id(client), "") if cooldown_until > now else ""
-        is_available = cooldown_until <= now
-        if is_available:
-            available_clients += 1
-
         tracked_req_ids = state.ws_to_req_ids.get(id(client), set())
         node_key = node_label(client)
         uid = state.client_uids.get(id(client), "")
+        health = state.client_health.get(id(client), {})
+        health_status = health.get("status", "unknown") if isinstance(health, dict) else "unknown"
+        lifecycle = state.uid_lifecycle.get(uid, {}) if uid else {}
+        expire_at = float(lifecycle.get("expire_at") or 0) if isinstance(lifecycle, dict) else 0
+        lease_remaining_seconds = max(0, int(expire_at - now)) if expire_at else None
+        bad_key_until = float(state.bad_key_uids.get(uid, 0) or 0) if uid else 0
+        bad_key_remaining = max(0, int(bad_key_until - now)) if bad_key_until else 0
+        legacy_fallback_enabled_now = get_env_bool("MIMO_ALLOW_LEGACY_WS_FALLBACK", False)
+        health_available = health_status in {"healthy", "unknown"} or (legacy_fallback_enabled_now and not uid and health_status == "legacy")
+        is_available = cooldown_until <= now and bad_key_remaining <= 0 and health_available
+        if is_available:
+            available_clients += 1
         connected_at = state.client_connected_at.get(id(client), now)
         if uid:
             uid_clients += 1
@@ -581,6 +589,12 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
             "connected_at": int(connected_at),
             "connected_for_seconds": max(0, int(now - connected_at)),
             "available": is_available,
+            "health_status": health_status,
+            "health": health if isinstance(health, dict) else {},
+            "lease_remaining_seconds": lease_remaining_seconds,
+            "lease_expire_at": int(expire_at) if expire_at else 0,
+            "lifecycle": lifecycle if isinstance(lifecycle, dict) else {},
+            "bad_key_remaining_seconds": bad_key_remaining,
             "cooldown_until": int(cooldown_until) if cooldown_until > now else 0,
             "cooldown_remaining_seconds": max(0, int(cooldown_until - now)),
             "cooldown_reason": cooldown_reason,
@@ -730,8 +744,21 @@ def build_gateway_stats(background_tasks_count: int) -> dict[str, Any]:
             "observed_uids": len(state.openclaw_features_by_uid),
             "by_uid": dict(state.openclaw_features_by_uid),
         },
-        "manager": dict(state.manager_status),
-        "routes": routes,
+            "manager": dict(state.manager_status),
+            "lifecycle": {
+                "uids": dict(state.uid_lifecycle),
+                "bad_key_uids": {
+                    uid: {
+                        "remaining_seconds": max(0, int(until - now)),
+                        "reason": state.bad_key_reasons.get(uid, ""),
+                    }
+                    for uid, until in state.bad_key_uids.items()
+                    if until > now
+                },
+                "pending_rebuild_requests": dict(state.uid_rebuild_requests),
+                "global_rebuild_generation": state.global_rebuild_generation,
+            },
+            "routes": routes,
         "nodes": nodes,
     }
 

@@ -545,8 +545,8 @@
                 </div>
                 <span id="activeRequestsBadge" class="badge">活跃 0</span>
             </div>
-            <div style="margin-top: 16px;">
-                <h3 style="margin: 0 0 10px 0; font-size: 15px;">活跃请求</h3>
+	            <div style="margin-top: 16px;">
+	                <h3 style="margin: 0 0 10px 0; font-size: 15px;">活跃请求</h3>
                 <div class="table-wrapper">
                     <table>
                         <thead>
@@ -554,21 +554,42 @@
                                 <th>请求 ID</th>
                                 <th>路由</th>
                                 <th>模型</th>
-                                <th>Stream</th>
+                                <th>流式</th>
                                 <th>节点 UID</th>
                                 <th>节点地址</th>
                                 <th>耗时</th>
-                                <th>Attempt</th>
+                                <th>尝试</th>
                             </tr>
                         </thead>
                         <tbody id="activeRequestsBody">
                             <tr><td colspan="8" class="empty-state">暂无活跃请求</td></tr>
                         </tbody>
                     </table>
-                </div>
-            </div>
-            <div style="margin-top: 18px;">
-                <h3 style="margin: 0 0 10px 0; font-size: 15px;">最近请求命中节点</h3>
+	                </div>
+	            </div>
+	            <div style="margin-top: 18px;">
+	                <h3 style="margin: 0 0 10px 0; font-size: 15px;">节点健康 / 租约</h3>
+	                <div class="table-wrapper">
+	                    <table>
+	                        <thead>
+	                            <tr>
+	                                <th>节点</th>
+	                                <th>健康</th>
+	                                <th>调度</th>
+	                                <th>剩余租约</th>
+	                                <th>生命周期</th>
+	                                <th>密钥封禁</th>
+	                                <th>冷却</th>
+	                            </tr>
+	                        </thead>
+	                        <tbody id="nodeHealthBody">
+	                            <tr><td colspan="7" class="empty-state">等待节点健康数据</td></tr>
+	                        </tbody>
+	                    </table>
+	                </div>
+	            </div>
+	            <div style="margin-top: 18px;">
+	                <h3 style="margin: 0 0 10px 0; font-size: 15px;">最近请求命中节点</h3>
                 <div class="table-wrapper">
                     <table>
                         <thead>
@@ -995,12 +1016,15 @@
                 const indicator = document.getElementById('statusIndicator');
                 const text = document.getElementById('statusText');
                 
-                if (data.active_clients > 0) {
-                    indicator.className = 'status-indicator';
-                    text.textContent = `内网通信节点保持连接: ${data.active_clients} 个`;
-                } else {
-                    indicator.className = 'status-indicator offline';
-                    text.textContent = `危险！没有任何一个内网节点在线，所有 API 请求将被退回`;
+	                if ((data.dispatchable_clients || 0) > 0) {
+	                    indicator.className = 'status-indicator';
+	                    text.textContent = `可调度节点 ${data.dispatchable_clients}/${data.active_clients} 个；密钥失效 UID ${data.bad_key_uid_count || 0}`;
+	                } else if (data.active_clients > 0) {
+	                    indicator.className = 'status-indicator offline';
+	                    text.textContent = `有 ${data.active_clients} 个节点连接，但暂无可调度健康节点`;
+	                } else {
+	                    indicator.className = 'status-indicator offline';
+	                    text.textContent = `危险！没有任何一个内网节点在线，所有 API 请求将被退回`;
                 }
             } catch(e) {
                 if (e.message === 'UNAUTHORIZED') {
@@ -1013,21 +1037,37 @@
 
         async function fetchUsers() {
             try {
-                const res = await apiFetch('/api/users/list');
+                const [res, statsRes] = await Promise.all([
+                    apiFetch('/api/users/list'),
+                    apiFetch('/api/stats').catch(() => null),
+                ]);
                 const data = await res.json();
+                const stats = statsRes ? await statsRes.json().catch(() => ({})) : {};
+                const lifecycleByUid = ((stats.lifecycle || {}).uids || {});
                 const tbody = document.getElementById('usersBody');
                 knownUsers = data.users || [];
                 renderOpenClawUidOptions();
                 
                 if (data.users && data.users.length > 0) {
-                    tbody.innerHTML = data.users.map(u => `
+                    tbody.innerHTML = data.users.map(u => {
+                        const lifecycle = lifecycleByUid[String(u.userId || '')] || {};
+                        const stage = String(lifecycle.stage || '');
+                        const platform = String(lifecycle.platform_status || '');
+                        const platformLabel = platformStatusLabel(u.claw_status);
+                        const managerActive = ['creating', 'create_rate_limited', 'create_failed', 'destroying', 'injecting'].includes(stage);
+                        const displayLabel = managerActive ? lifecycleLabel(stage) : platformLabel;
+                        const detailText = managerActive
+                            ? `平台：${platformLabel || '-'}；管理器：${platform ? platformStatusLabel(platform) : displayLabel}`
+                            : (u.remain_sec > 0 ? '剩余: ' + Math.floor(u.remain_sec / 60) + ' 分 ' + (u.remain_sec % 60) + ' 秒' : '已过期/无环境');
+                        const statusColor = (u.claw_status === 'AVAILABLE' && !managerActive) ? '#10B981' : (u.claw_status === 'EXPIRED(401)' ? '#EF4444' : '#F59E0B');
+                        return `
                         <tr>
                             <td><strong style="color:var(--primary)">${u.userId}</strong></td>
                             <td>${u.name || '(未命名)'}</td>
                             <td>
-                                <div><strong style="color: ${u.claw_status === 'AVAILABLE' ? '#10B981' : (u.claw_status === 'EXPIRED(401)' ? '#EF4444' : '#F59E0B')}">${u.claw_status || '未知'}</strong></div>
-                                <div class="countdown-text" data-remain="${u.remain_sec}" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
-                                    ${u.remain_sec > 0 ? '剩余: ' + Math.floor(u.remain_sec / 60) + ' 分 ' + (u.remain_sec % 60) + ' 秒' : '已过期/无环境'}
+                                <div><strong style="color: ${statusColor}">${escapeHtml(displayLabel)}</strong></div>
+                                <div class="countdown-text" data-remain="${u.remain_sec}" data-expire-at="${u.expire_at || 0}" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">
+                                    ${escapeHtml(detailText)}
                                 </div>
                             </td>
                             <td>
@@ -1039,7 +1079,8 @@
                                 <button class="btn btn-danger" onclick="deleteUser('${u.userId}')">删除</button>
                             </td>
                         </tr>
-                    `).join('');
+                    `;
+                    }).join('');
                 } else {
                     tbody.innerHTML = '<tr><td colspan="5" class="empty-state">当前未加载任何凭证</td></tr>';
                 }
@@ -1187,11 +1228,102 @@
             el.innerHTML = `<div class="warning-box" style="margin-top:0;">${escapeHtml(formatOpenClawErrors(errors, fallback))}</div>`;
         }
 
-        function formatDuration(ms) {
-            const value = Number(ms || 0);
-            if (value >= 1000) return (value / 1000).toFixed(1) + 's';
-            return Math.round(value) + 'ms';
-        }
+	        function formatDuration(ms) {
+	            const value = Number(ms || 0);
+	            if (value >= 1000) return (value / 1000).toFixed(1) + '秒';
+	            return Math.round(value) + '毫秒';
+	        }
+
+	        function streamLabel(value) {
+	            if (value === null || value === undefined || value === '') return '-';
+	            if (value === true || value === 'true') return '是';
+	            if (value === false || value === 'false') return '否';
+	            return String(value);
+	        }
+
+	        function formatSeconds(sec) {
+	            if (sec === null || sec === undefined || sec === '') return '-';
+	            const value = Math.max(0, Number(sec || 0));
+	            if (value >= 3600) return `${Math.floor(value / 3600)}时 ${Math.floor((value % 3600) / 60)}分`;
+	            if (value >= 60) return `${Math.floor(value / 60)}分 ${Math.floor(value % 60)}秒`;
+	            return `${Math.floor(value)}秒`;
+	        }
+
+	        function healthBadge(status) {
+	            const s = String(status || 'unknown');
+	            const color = s === 'healthy' ? '#10B981' : (s === 'probing' ? '#F59E0B' : (s === 'bad_key' ? '#EF4444' : '#64748B'));
+	            const label = ({
+	                healthy: '健康',
+	                probing: '探测中',
+	                bad_key: '密钥失效',
+	                legacy: '旧版',
+	                unknown: '未探测',
+	                draining: '退出调度',
+	                rebuilding: '重建中',
+	                unavailable: '不可用'
+	            })[s] || s;
+	            return `<span class="badge" style="border-color:${color}; color:${color}; background:rgba(255,255,255,.04)">${escapeHtml(label)}</span>`;
+	        }
+
+	        function lifecycleLabel(stage) {
+	            const s = String(stage || '');
+	            return ({
+	                runtime_active: '运行中',
+	                observed: '已观测',
+	                reusing: '复用中',
+	                active_reused: '复用服务中',
+	                active_existing_bridge: '已有桥接运行中',
+	                active: '服务中',
+	                force_rebuild: '强制重建',
+	                destroying: '销毁中',
+	                creating: '创建中',
+	                create_rate_limited: '创建受限',
+	                create_failed: '创建失败',
+	                injecting: '注入中',
+	                draining: '排空中',
+	                rebuilding: '重建中',
+	                drain: '排空中',
+	                rebuild: '重建中',
+	                expired: '已过期',
+	                unknown: '-'
+	            })[s] || (s || '-');
+	        }
+
+	        function platformStatusLabel(status) {
+	            const s = String(status || '');
+	            return ({
+	                AVAILABLE: '可用',
+	                DESTROYED: '已销毁',
+	                DESTROYING: '销毁中',
+	                CREATING: '创建中',
+	                CREATE_FAILED: '创建失败',
+	                RATE_LIMITED: '平台限流',
+	                EXPIRED: '已过期',
+	                ERROR: '错误',
+	                UNKNOWN: '-'
+	            })[s] || (s || '-');
+	        }
+
+	        function effectiveLifecycleDisplay(node) {
+	            const lifecycle = node.lifecycle || {};
+	            const rawStage = String(lifecycle.stage || '');
+	            const rawPlatform = String(lifecycle.platform_status || '');
+	            const runtimeHealthy = node.health_status === 'healthy' && !!node.available;
+	            const staleStages = new Set(['create_failed', 'create_rate_limited', 'creating', 'destroying', 'injecting', 'observed', 'force_rebuild']);
+	            if (runtimeHealthy && (staleStages.has(rawStage) || !rawStage)) {
+	                return {
+	                    stage: '运行中',
+	                    platform: rawPlatform ? `${platformStatusLabel(rawPlatform)}（平台状态滞后，以运行态为准）` : '运行态已验证',
+	                    overridden: true,
+	                };
+	            }
+	            return {
+	                stage: lifecycleLabel(rawStage),
+	                platform: platformStatusLabel(rawPlatform),
+	                overridden: false,
+	            };
+	        }
+
 
         function formatTs(ts) {
             if (!ts) return '-';
@@ -1224,37 +1356,72 @@
             return `${escapeHtml(gwShort)}<div class="status-subtext">${escapeHtml(nodeShort)}</div>`;
         }
 
-        async function fetchRequestNodes() {
-            if (webAuthEnabled && !webAuthReady) return;
-            try {
-                const res = await apiFetch('/api/requests/active');
-                const data = await res.json();
-                const active = data.active_requests || [];
-                const recent = data.recent_dispatches || [];
-                const activeBody = document.getElementById('activeRequestsBody');
-                const recentBody = document.getElementById('recentDispatchesBody');
-                const badge = document.getElementById('activeRequestsBadge');
-                const summary = document.getElementById('requestNodesSummary');
-
-                badge.textContent = `活跃 ${active.length}`;
-                summary.textContent = `当前活跃请求 ${active.length} 个，最近记录 ${recent.length} 条；仅展示 UID、地址和请求元数据，不显示正文或密钥。`;
+	        async function fetchRequestNodes() {
+	            if (webAuthEnabled && !webAuthReady) return;
+	            try {
+	                const [reqRes, statsRes] = await Promise.all([
+	                    apiFetch('/api/requests/active'),
+	                    apiFetch('/api/stats'),
+	                ]);
+	                const data = await reqRes.json();
+	                const stats = await statsRes.json();
+	                const active = data.active_requests || [];
+	                const recent = data.recent_dispatches || [];
+	                const nodes = stats.nodes || [];
+	                const activeBody = document.getElementById('activeRequestsBody');
+	                const recentBody = document.getElementById('recentDispatchesBody');
+	                const nodeBody = document.getElementById('nodeHealthBody');
+	                const badge = document.getElementById('activeRequestsBadge');
+	                const summary = document.getElementById('requestNodesSummary');
+	
+	                badge.textContent = `活跃 ${active.length}`;
+	                const badKeyCount = Object.keys((stats.lifecycle || {}).bad_key_uids || {}).length;
+	                summary.textContent = `请求 ${active.length} 个；健康可调度节点 ${stats.dispatchable_clients || 0}/${stats.active_clients || 0}；密钥失效 UID ${badKeyCount}；最近记录 ${recent.length} 条。`;
 
                 if (!active.length) {
                     activeBody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无活跃请求</td></tr>';
                 } else {
-                    activeBody.innerHTML = active.map(item => `
+	                    activeBody.innerHTML = active.map(item => `
                         <tr>
                             <td>${shortReqId(item)}</td>
                             <td>${escapeHtml(item.route || '-')}</td>
                             <td>${escapeHtml(item.model || '-')}</td>
-                            <td>${escapeHtml(item.stream === null || item.stream === undefined ? '-' : String(item.stream))}</td>
+                            <td>${escapeHtml(streamLabel(item.stream))}</td>
                             <td>${escapeHtml(item.node_uid || '(legacy)')}</td>
                             <td>${escapeHtml(item.node_addr || '-')}</td>
                             <td>${escapeHtml(formatDuration(item.elapsed_ms))}</td>
                             <td>${escapeHtml(item.attempt || '-')}</td>
                         </tr>
-                    `).join('');
-                }
+	                    `).join('');
+	                }
+
+	                if (!nodes.length) {
+	                    nodeBody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无在线节点</td></tr>';
+	                } else {
+	                    nodeBody.innerHTML = nodes.map(n => {
+	                        const lifecycleInfo = effectiveLifecycleDisplay(n);
+	                        const stage = lifecycleInfo.stage;
+	                        const platform = lifecycleInfo.platform;
+	                        const lease = n.lease_remaining_seconds;
+	                        const leaseExpireAt = Number(n.lease_expire_at || (n.lifecycle && n.lifecycle.expire_at) || 0);
+	                        const leaseText = (lease === null || lease === undefined) ? (n.available ? '租约未上报' : '-') : formatSeconds(lease);
+	                        const leaseWarn = Number(lease || 0) > 0 && Number(lease || 0) < 900;
+	                        return `
+	                            <tr>
+	                                <td>
+	                                    <strong style="color:var(--primary)">${escapeHtml(n.uid || '(legacy)')}</strong>
+	                                    <div class="status-subtext">${escapeHtml(n.node || '-')}</div>
+	                                </td>
+	                                <td>${healthBadge(n.health_status)}</td>
+	                                <td>${n.available ? '<span class="badge">可调度</span>' : '<span class="badge warn">不可调度</span>'}</td>
+	                                <td style="color:${leaseWarn ? '#F59E0B' : 'inherit'}"><span class="lease-countdown" data-remain="${lease ?? ''}" data-expire-at="${leaseExpireAt || ''}">${escapeHtml(leaseText)}</span></td>
+	                                <td>${escapeHtml(stage)}<div class="status-subtext">${escapeHtml(platform)}</div></td>
+	                                <td>${n.bad_key_remaining_seconds ? `<span class="badge warn">${escapeHtml(formatSeconds(n.bad_key_remaining_seconds))}</span>` : '-'}</td>
+	                                <td>${n.cooldown_remaining_seconds ? escapeHtml(formatSeconds(n.cooldown_remaining_seconds)) : '-'}</td>
+	                            </tr>
+	                        `;
+	                    }).join('');
+	                }
 
                 if (!recent.length) {
                     recentBody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无最近请求</td></tr>';
@@ -2483,18 +2650,30 @@
             }
         }
         
-        // 本地纯前端倒计时（不消耗任何网络请求）
-        setInterval(() => {
-            document.querySelectorAll('.countdown-text').forEach(el => {
-                let remain = parseInt(el.getAttribute('data-remain'));
-                if (remain > 0) {
-                    remain--;
-                    el.setAttribute('data-remain', remain);
-                    el.textContent = '剩余: ' + Math.floor(remain / 60) + ' 分 ' + (remain % 60) + ' 秒';
-                } else if (remain === 0 && el.textContent.includes('剩余')) {
-                    el.textContent = '即将或已过期...';
+        function updateCountdownElement(el, {prefix = ''} = {}) {
+            const expireAt = Number(el.getAttribute('data-expire-at') || 0);
+            let remain;
+            if (expireAt > 0) {
+                remain = Math.max(0, Math.floor(expireAt - Date.now() / 1000));
+            } else {
+                remain = parseInt(el.getAttribute('data-remain'));
+                if (Number.isFinite(remain) && remain > 0) {
+                    remain -= 1;
                 }
-            });
+            }
+            if (!Number.isFinite(remain)) return;
+            el.setAttribute('data-remain', remain);
+            if (remain > 0) {
+                el.textContent = prefix + formatSeconds(remain);
+            } else if (el.textContent.includes('剩余') || el.classList.contains('lease-countdown')) {
+                el.textContent = prefix ? '即将或已过期...' : '0秒';
+            }
+        }
+
+        // 本地纯前端倒计时（不消耗任何网络请求）；节点租约和用户剩余时间都每秒平滑减少。
+        setInterval(() => {
+            document.querySelectorAll('.countdown-text').forEach(el => updateCountdownElement(el, {prefix: '剩余: '}));
+            document.querySelectorAll('.lease-countdown').forEach(el => updateCountdownElement(el));
         }, 1000);
 
         window.addEventListener('DOMContentLoaded', bootstrap);

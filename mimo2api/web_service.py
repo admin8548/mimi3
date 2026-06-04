@@ -27,7 +27,7 @@ except ImportError:
 MODEL_MAPPING_FILE = Path(os.getenv("MIMO_MODEL_MAPPING_PATH", Path(__file__).parent.parent / "model_mapping.json"))
 
 # 引入 Manager 长驻协程任务
-from .manager import start_manager_tasks, trigger_rebuild
+from .manager import start_manager_tasks, trigger_rebuild, get_bridge_code
 
 # Responses API 转换器
 from .responses_converter import convert_request as responses_convert_request
@@ -269,6 +269,13 @@ WEBUI_PUBLIC_PATHS = {
 }
 PREFERRED_UID = os.getenv("MIMO_PREFERRED_UID", "").strip()
 ALLOW_LEGACY_WS_FALLBACK = get_env_bool("MIMO_ALLOW_LEGACY_WS_FALLBACK", False)
+ONE_ACTIVE_BRIDGE_PER_UID = get_env_bool("MIMO_ONE_ACTIVE_BRIDGE_PER_UID", True)
+NODE_MIN_DISPATCH_REMAIN_SECONDS = get_env_int("MIMO_NODE_MIN_DISPATCH_REMAIN_SECONDS", 600, min_value=0)
+NODE_MIN_STREAM_REMAIN_SECONDS = get_env_int("MIMO_NODE_MIN_STREAM_REMAIN_SECONDS", 1200, min_value=0)
+NODE_MIN_COMPACT_REMAIN_SECONDS = get_env_int("MIMO_NODE_MIN_COMPACT_REMAIN_SECONDS", 900, min_value=0)
+NODE_BAD_KEY_BAN_SECONDS = get_env_int("MIMO_NODE_BAD_KEY_BAN_SECONDS", 900, min_value=0)
+NODE_PROBE_TIMEOUT_SECONDS = get_env_int("MIMO_NODE_PROBE_TIMEOUT_SECONDS", 20, min_value=1)
+NODE_PROBE_MODEL = os.getenv("MIMO_NODE_PROBE_MODEL", "mimo-v2-flash").strip() or "mimo-v2-flash"
 KEY_DIAGNOSTIC_ROUTES = {
     "/v1/chat/completions",
     "/v1/responses",
@@ -492,6 +499,146 @@ def new_gateway_request_id() -> str:
     return f"gw_{uuid.uuid4().hex[:12]}"
 
 
+def uid_bad_key_remaining(uid: str) -> int:
+    uid = str(uid or "").strip()
+    if not uid:
+        return 0
+    until = float(state.bad_key_uids.get(uid, 0) or 0)
+    remaining = int(until - time.time())
+    if remaining <= 0:
+        state.bad_key_uids.pop(uid, None)
+        state.bad_key_reasons.pop(uid, None)
+        return 0
+    return remaining
+
+
+def mark_uid_bad_key(uid: str, reason: str) -> None:
+    uid = str(uid or "").strip()
+    if not uid:
+        return
+    now = time.time()
+    state.bad_key_uids[uid] = now + NODE_BAD_KEY_BAN_SECONDS
+    state.bad_key_reasons[uid] = str(reason or "upstream invalid_key")[:300]
+    # Reject stale bridge.py copies injected before this bad-key event.
+    # A fresh hard-rebuild injection carries a newer epoch in /ws?epoch=...
+    # and is allowed to prove itself via the upstream probe.
+    state.uid_min_bridge_epoch[uid] = max(int(now), int(state.uid_min_bridge_epoch.get(uid, 0) or 0))
+    excluded_user_ids = {
+        item.strip()
+        for item in os.getenv("MIMO_MANAGER_EXCLUDE_USER_IDS", "").split(",")
+        if item.strip()
+    }
+    if uid in excluded_user_ids:
+        rebuild_note = "该 UID 已被 manager 排除，仅抑制旧 bridge，不触发全局 hard rebuild"
+    else:
+        state.uid_rebuild_requests[uid] = {
+            "requested_at": int(time.time()),
+            "reason": str(reason or "upstream invalid_key")[:300],
+        }
+        trigger_rebuild()
+        rebuild_note = "并已请求 hard rebuild"
+    logger.warning(
+        f"🚧 UID {uid} 因上游 Invalid API Key 被标记为 bad_key，"
+        f"ban={NODE_BAD_KEY_BAN_SECONDS}s，{rebuild_note}"
+    )
+
+
+def node_remaining_seconds_for_uid(uid: str) -> int | None:
+    uid = str(uid or "").strip()
+    if not uid:
+        return None
+    lifecycle = state.uid_lifecycle.get(uid)
+    if not isinstance(lifecycle, dict):
+        return None
+    expire_at = lifecycle.get("expire_at")
+    if expire_at:
+        try:
+            return max(0, int(float(expire_at) - time.time()))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return max(0, int(lifecycle.get("remain_sec")))
+    except (TypeError, ValueError):
+        return None
+
+
+def required_remaining_seconds_for_dispatch(route_key: str | None = None, stream: bool | None = None) -> int:
+    route = str(route_key or "")
+    if route == "/v1/responses/compact":
+        return NODE_MIN_COMPACT_REMAIN_SECONDS
+    if stream:
+        return NODE_MIN_STREAM_REMAIN_SECONDS
+    return NODE_MIN_DISPATCH_REMAIN_SECONDS
+
+
+def is_client_dispatchable(client: WebSocket, *, min_remaining_seconds: int = 0) -> bool:
+    now = time.time()
+    ws_id = id(client)
+    if state.client_cooldowns.get(ws_id, 0) > now:
+        return False
+    health = state.client_health.get(ws_id)
+    health_status = health.get("status") if isinstance(health, dict) else "unknown"
+    uid = state.client_uids.get(ws_id, "")
+    if health_status != "healthy":
+        if not (ALLOW_LEGACY_WS_FALLBACK and not uid and health_status in {"legacy", "unknown"}):
+            return False
+    if uid:
+        if uid_bad_key_remaining(uid) > 0:
+            return False
+        remaining = node_remaining_seconds_for_uid(uid)
+        if remaining is not None and remaining < min_remaining_seconds:
+            return False
+    return True
+
+
+def uid_has_other_healthy_bridge(uid: str, exclude_ws: WebSocket | None = None) -> bool:
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    for client in list(state.active_clients):
+        if exclude_ws is not None and client is exclude_ws:
+            continue
+        if state.client_uids.get(id(client)) != uid:
+            continue
+        health = state.client_health.get(id(client), {})
+        if isinstance(health, dict) and health.get("status") == "healthy":
+            return True
+    return False
+
+
+def bridge_epoch_for_client(client: WebSocket) -> int:
+    health = state.client_health.get(id(client), {})
+    if not isinstance(health, dict):
+        return 0
+    raw = health.get("bridge_epoch") or (health.get("bridge_hello") or {}).get("epoch") or 0
+    try:
+        return int(float(raw or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def suppress_stale_bridge_epoch(uid: str, client: WebSocket, reason: str) -> None:
+    """Remember a bad bridge generation so it cannot reconnect forever.
+
+    This is separate from uid bad_key banning: when a UID already has another
+    healthy bridge, we only want to reject the stale/bad generation, not the
+    whole UID.
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return
+    bad_epoch = bridge_epoch_for_client(client)
+    if bad_epoch <= 0:
+        bad_epoch = int(time.time())
+    previous = int(state.uid_min_bridge_epoch.get(uid, 0) or 0)
+    if bad_epoch > previous:
+        state.uid_min_bridge_epoch[uid] = bad_epoch
+        logger.warning(
+            f"🧱 已抑制 uid={uid} 的旧 bridge generation: "
+            f"min_epoch={bad_epoch}, reason={reason}"
+        )
+
+
 def node_addr(ws: WebSocket) -> str:
     if not ws.client:
         return "Unknown"
@@ -621,6 +768,8 @@ _background_tasks: set[asyncio.Task] = set()
 PROCESS_LOCK_SIZE = 1
 _legacy_reject_last_log_at = 0.0
 _legacy_reject_suppressed = 0
+_stale_bridge_reject_last_log_at: dict[str, float] = {}
+_stale_bridge_reject_suppressed: dict[str, int] = {}
 
 def _track_task(task: asyncio.Task) -> None:
     _background_tasks.add(task)
@@ -643,6 +792,24 @@ def should_log_legacy_reject(now: float | None = None) -> tuple[bool, int]:
         _legacy_reject_last_log_at = now
         return True, suppressed
     _legacy_reject_suppressed += 1
+    return False, 0
+
+
+def should_log_stale_bridge_reject(uid: str, now: float | None = None) -> tuple[bool, int]:
+    """Rate-limit stale uid bridge rejection logs per UID.
+
+    Old remote bridge loops reconnect quickly after we reject their outdated
+    epoch.  Rejecting remains mandatory for dispatch correctness, but logging
+    every reconnect hides actionable recovery evidence.
+    """
+    uid = str(uid or "<unknown>")
+    now = time.time() if now is None else now
+    last = float(_stale_bridge_reject_last_log_at.get(uid, 0) or 0)
+    if last == 0 or now - last >= LEGACY_REJECT_LOG_INTERVAL_SECONDS:
+        suppressed = int(_stale_bridge_reject_suppressed.pop(uid, 0) or 0)
+        _stale_bridge_reject_last_log_at[uid] = now
+        return True, suppressed
+    _stale_bridge_reject_suppressed[uid] = int(_stale_bridge_reject_suppressed.get(uid, 0) or 0) + 1
     return False, 0
 
 
@@ -739,8 +906,13 @@ class ForwardAttempt:
 
 @app.post("/api/rebuild")
 async def api_rebuild():
+    state.global_rebuild_generation += 1
     trigger_rebuild()
-    return JSONResponse(content={"ok": True, "message": "重建信号已发送，所有节点将在当前循环结束后立即重建"})
+    return JSONResponse(content={
+        "ok": True,
+        "generation": state.global_rebuild_generation,
+        "message": "hard rebuild 信号已发送；manager 将绕过 AVAILABLE 复用并销毁重建实例",
+    })
 
 @app.get("/api/stats")
 async def api_stats():
@@ -973,6 +1145,23 @@ async def api_openclaw_features():
     features = dict(state.openclaw_features_by_uid)
     return JSONResponse(content={"count": len(features), "by_uid": features})
 
+
+@app.get("/__mimo/bootstrap/bridge/{uid}.py")
+async def bridge_bootstrap_script(uid: str, token: str = ""):
+    expected = os.getenv("MIMO_BRIDGE_BOOTSTRAP_TOKEN", "").strip()
+    if not expected or token != expected:
+        return _admin_error_compat("invalid bootstrap token", 403, "forbidden")
+    uid = str(uid or "").strip()
+    if not uid:
+        return _admin_error_compat("missing uid", 400, "invalid_request_error")
+    try:
+        code = await get_bridge_code(uid)
+    except Exception as e:
+        logger.error(f"生成 bridge bootstrap 失败: uid={uid}, error={e}")
+        return _admin_error_compat("bridge bootstrap generation failed", 500, "server_error")
+    return Response(content=code, media_type="text/x-python")
+
+
 @app.get("/api/openclaw/events")
 async def api_openclaw_events(limit: int = 100):
     """Return recent sanitized OpenClaw event summaries for protocol research."""
@@ -1058,6 +1247,38 @@ async def ws_tunnel(ws: WebSocket):
     await ws.accept()
     client_addr = f"{ws.client.host}:{ws.client.port}" if ws.client else "Unknown"
     uid = (ws.query_params.get("uid") or "").strip()
+    bridge_epoch_raw = (ws.query_params.get("epoch") or "0").strip()
+    try:
+        bridge_epoch = int(float(bridge_epoch_raw or 0))
+    except ValueError:
+        bridge_epoch = 0
+    if uid:
+        min_epoch = int(state.uid_min_bridge_epoch.get(uid, 0) or 0)
+        bad_key_remaining = uid_bad_key_remaining(uid)
+        if min_epoch > 0 and bridge_epoch <= min_epoch:
+            should_log, suppressed = should_log_stale_bridge_reject(uid)
+            if should_log:
+                suffix = f"，上个窗口已抑制 {suppressed} 条同类日志" if suppressed else ""
+                logger.warning(
+                    f"🚫 拒绝 uid={uid} 旧 bridge 连接: addr={client_addr}，"
+                    f"bridge_epoch={bridge_epoch} <= min_epoch={min_epoch}，"
+                    f"bad_key ban 剩余 {bad_key_remaining}s{suffix}"
+                )
+            if LEGACY_REJECT_HOLD_SECONDS > 0:
+                try:
+                    await asyncio.sleep(LEGACY_REJECT_HOLD_SECONDS)
+                except asyncio.CancelledError:
+                    raise
+            try:
+                await ws.close(code=1008, reason="stale bridge generation rejected")
+            except Exception:
+                pass
+            return
+        if bad_key_remaining > 0:
+            logger.info(
+                f"🧪 uid={uid} 处于 bad_key ban，但检测到新 bridge_epoch={bridge_epoch} > {min_epoch}，"
+                "允许接入并执行健康探测"
+            )
     if not uid and not ALLOW_LEGACY_WS_FALLBACK and any(state.client_uids.values()):
         await reject_legacy_ws(ws, client_addr)
         return
@@ -1065,15 +1286,50 @@ async def ws_tunnel(ws: WebSocket):
     state.client_connected_at[id(ws)] = time.time()
     if uid:
         state.client_uids[id(ws)] = uid
+    state.client_health[id(ws)] = {
+        "status": "probing" if uid else "legacy",
+        "updated_at": int(time.time()),
+        "reason": "awaiting upstream probe" if uid else "legacy uid-less bridge",
+        "bridge_epoch": bridge_epoch or None,
+    }
     state.client_cooldowns.pop(id(ws), None)
     state.client_cooldown_reasons.pop(id(ws), None)
     uid_part = f" uid={uid}" if uid else " uid=<none>"
     logger.info(f"✅ 内网节点已接入:{uid_part} addr={client_addr}。当前在线节点数: {len(state.active_clients)}")
+    if uid:
+        _track_task(asyncio.create_task(probe_bridge_client(ws, uid), name=f"probe-bridge-{uid}"))
     
     try:
         while True:
             msg = await ws.receive_text()
             data = json.loads(msg)
+            if data.get("type") == "bridge.hello":
+                health = state.client_health.setdefault(id(ws), {})
+                health.update({
+                    "bridge_hello": sanitize_payload(data),
+                    "bridge_version": str(data.get("bridge_version") or data.get("version") or "")[:40],
+                    "bridge_epoch": data.get("epoch"),
+                    "updated_at": int(time.time()),
+                })
+                continue
+            if data.get("type") == "bridge.status":
+                health = state.client_health.setdefault(id(ws), {})
+                status_text = str(data.get("status") or "")
+                health.update({
+                    "bridge_status": sanitize_payload(data),
+                    "status": "bad_key" if status_text == "bad_key" else health.get("status", "healthy"),
+                    "updated_at": int(time.time()),
+                    "reason": str(data.get("reason") or status_text)[:200],
+                })
+                if status_text == "bad_key" and uid:
+                    if uid_has_other_healthy_bridge(uid, exclude_ws=ws):
+                        suppress_stale_bridge_epoch(uid, ws, "bridge reported bad_key")
+                        logger.warning(f"🧹 bridge reported bad_key，但 uid={uid} 已有其它健康 bridge；仅移除此旧连接")
+                    else:
+                        mark_uid_bad_key(uid, str(data.get("reason") or "bridge reported bad_key"))
+                    await retire_client(ws, "bridge reported bad_key")
+                    return
+                continue
             req_id = data.get("req_id")
             if req_id and req_id in state.pending_queues:
                 touch_pending_request(req_id)
@@ -1089,6 +1345,7 @@ async def ws_tunnel(ws: WebSocket):
         state.client_connected_at.pop(id(ws), None)
         state.client_cooldowns.pop(id(ws), None)
         state.client_cooldown_reasons.pop(id(ws), None)
+        state.client_health.pop(id(ws), None)
         
         # 清理该节点的所有孤儿队列
         orphan_ids = state.ws_to_req_ids.pop(id(ws), set())
@@ -1110,11 +1367,14 @@ async def ws_tunnel(ws: WebSocket):
         logger.info(f"当前在线节点数: {len(state.active_clients)}")
 
 
-def get_available_dispatch_clients(preferred_uid: str | None = None) -> list[WebSocket]:
-    now = time.time()
+def get_available_dispatch_clients(
+    preferred_uid: str | None = None,
+    *,
+    min_remaining_seconds: int = 0,
+) -> list[WebSocket]:
     available_clients: list[WebSocket] = []
     for client in state.active_clients:
-        if state.client_cooldowns.get(id(client), 0) <= now:
+        if is_client_dispatchable(client, min_remaining_seconds=min_remaining_seconds):
             available_clients.append(client)
     if not available_clients:
         return []
@@ -1138,8 +1398,8 @@ def get_available_dispatch_clients(preferred_uid: str | None = None) -> list[Web
     return []
 
 
-def get_next_client(preferred_uid: str | None = None) -> WebSocket | None:
-    dispatch_clients = get_available_dispatch_clients(preferred_uid)
+def get_next_client(preferred_uid: str | None = None, *, min_remaining_seconds: int = 0) -> WebSocket | None:
+    dispatch_clients = get_available_dispatch_clients(preferred_uid, min_remaining_seconds=min_remaining_seconds)
     if not dispatch_clients:
         return None
 
@@ -1150,8 +1410,8 @@ def get_next_client(preferred_uid: str | None = None) -> WebSocket | None:
     return client
 
 
-def get_available_client_count() -> int:
-    return len(get_available_dispatch_clients(PREFERRED_UID))
+def get_available_client_count(min_remaining_seconds: int = 0) -> int:
+    return len(get_available_dispatch_clients(PREFERRED_UID, min_remaining_seconds=min_remaining_seconds))
 
 
 def touch_pending_request(req_id: str) -> None:
@@ -1206,6 +1466,7 @@ async def retire_client(ws: WebSocket, reason: str) -> None:
     state.client_connected_at.pop(id(ws), None)
     state.client_cooldowns.pop(id(ws), None)
     state.client_cooldown_reasons.pop(id(ws), None)
+    state.client_health.pop(id(ws), None)
     for req_id in list(state.ws_to_req_ids.get(id(ws), set())):
         q = state.pending_queues.get(req_id)
         if q:
@@ -1219,6 +1480,100 @@ async def retire_client(ws: WebSocket, reason: str) -> None:
     except Exception:
         pass
     logger.warning(f"🧹 已移除失效节点 {label}: {reason}。当前在线节点数: {len(state.active_clients)}")
+
+
+async def retire_duplicate_uid_clients(uid: str, keep_ws: WebSocket) -> None:
+    """Keep only the newest healthy bridge for a UID to avoid stale old processes."""
+    if not ONE_ACTIVE_BRIDGE_PER_UID or not uid:
+        return
+    duplicates = [
+        client for client in list(state.active_clients)
+        if client is not keep_ws and state.client_uids.get(id(client)) == uid
+    ]
+    for client in duplicates:
+        await retire_client(client, f"duplicate uid {uid}; newer healthy bridge selected")
+
+
+async def probe_bridge_client(ws: WebSocket, uid: str) -> None:
+    """Run a tiny upstream probe before allowing a bridge into the dispatch pool."""
+    await asyncio.sleep(0.2)
+    if ws not in state.active_clients:
+        return
+
+    ws_id = id(ws)
+    state.client_health[ws_id] = {
+        **state.client_health.get(ws_id, {}),
+        "status": "probing",
+        "updated_at": int(time.time()),
+        "reason": "running upstream probe",
+    }
+
+    req_id = "unknown"
+    try:
+        req_id, queue = create_pending_request()
+        state.req_id_to_ws_id[req_id] = ws_id
+        state.ws_to_req_ids.setdefault(ws_id, set()).add(req_id)
+        body = json.dumps({
+            "model": NODE_PROBE_MODEL,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "stream": False,
+        }, ensure_ascii=False)
+        await ws.send_text(build_ws_payload(req_id, "POST", "/v1/chat/completions", body))
+        first_msg = await asyncio.wait_for(queue.get(), timeout=NODE_PROBE_TIMEOUT_SECONDS)
+        status_code = int(first_msg.get("status") or 200)
+
+        body_preview = ""
+        try:
+            body_preview = (await asyncio.wait_for(collect_response_body(req_id, queue), timeout=NODE_PROBE_TIMEOUT_SECONDS))[:512]
+        except Exception:
+            body_preview = ""
+
+        if status_code == 401 and ("Invalid API Key" in body_preview or "invalid_key" in body_preview):
+            state.client_health[ws_id] = {
+                "status": "bad_key",
+                "updated_at": int(time.time()),
+                "last_probe_status": status_code,
+                "reason": "upstream invalid_key during bridge probe",
+            }
+            if uid_has_other_healthy_bridge(uid, exclude_ws=ws):
+                suppress_stale_bridge_epoch(uid, ws, "upstream invalid_key during bridge probe")
+                logger.warning(f"🧹 bridge 探测发现 bad_key，但 uid={uid} 已有其它健康 bridge；仅移除此旧连接")
+            else:
+                mark_uid_bad_key(uid, "upstream invalid_key during bridge probe")
+            await retire_client(ws, "上游 Invalid API Key during bridge probe")
+            return
+
+        # Non-401 probe failures are often transient platform capacity or model
+        # throttling.  Mark the bridge dispatchable but cool it briefly so the
+        # scheduler can recover without emptying the entire pool.
+        state.client_health[ws_id] = {
+            **state.client_health.get(ws_id, {}),
+            "status": "healthy",
+            "updated_at": int(time.time()),
+            "last_probe_status": status_code,
+            "reason": "probe ok" if status_code < 400 else f"transient probe status {status_code}",
+        }
+        if status_code < 400:
+            state.bad_key_uids.pop(uid, None)
+            state.bad_key_reasons.pop(uid, None)
+        if status_code >= 400:
+            cooldown_client(ws, min(60, NODE_401_COOLDOWN_SECONDS or 60), f"probe status {status_code}")
+        await retire_duplicate_uid_clients(uid, ws)
+        logger.info(f"✅ bridge 探测完成: uid={uid} node={node_label(ws)} status={status_code}")
+    except Exception as exc:
+        if ws in state.active_clients:
+            state.client_health[ws_id] = {
+                **state.client_health.get(ws_id, {}),
+                "status": "healthy",
+                "updated_at": int(time.time()),
+                "reason": f"probe transient failure: {type(exc).__name__}",
+            }
+            cooldown_client(ws, 30, f"probe transient failure: {type(exc).__name__}")
+            logger.warning(f"⚠️ bridge 探测暂时失败，短冷却后放行: uid={uid} node={node_label(ws)} error={exc}")
+    finally:
+        cleanup_pending_request(req_id, end_reason="bridge_probe")
+
 
 async def drain_and_close(
     req_id: str,
@@ -1273,7 +1628,10 @@ async def dispatch_to_node(
         logger.warning("⚠️ pending queue 已满，拒绝新请求")
         return None
         
-    target_ws = get_next_client(PREFERRED_UID)
+    model_from_body, stream_from_body = extract_request_metadata(body)
+    effective_stream = stream if stream is not None else stream_from_body
+    min_remaining = required_remaining_seconds_for_dispatch(route_key or path, effective_stream)
+    target_ws = get_next_client(PREFERRED_UID, min_remaining_seconds=min_remaining)
     if not target_ws:
         cleanup_pending_request(req_id, end_reason="no_available_node")
         return None
@@ -1284,7 +1642,6 @@ async def dispatch_to_node(
 
     ws_payload = build_ws_payload(req_id, method, path, body)
     attempt_started_at = time.monotonic()
-    model_from_body, stream_from_body = extract_request_metadata(body)
     target_uid = state.client_uids.get(id(target_ws), "")
     tracking_record = {
         "gateway_request_id": gateway_request_id or new_gateway_request_id(),
@@ -1293,7 +1650,8 @@ async def dispatch_to_node(
         "upstream_path": path,
         "method": method,
         "model": model if model is not None else model_from_body,
-        "stream": stream if stream is not None else stream_from_body,
+        "stream": effective_stream,
+        "min_remaining_seconds": min_remaining,
         "node_uid": target_uid,
         "node_addr": node_addr(target_ws),
         "node": node_label(target_ws),
@@ -1323,6 +1681,7 @@ async def dispatch_to_node(
         state.client_connected_at.pop(id(target_ws), None)
         state.client_cooldowns.pop(id(target_ws), None)
         state.client_cooldown_reasons.pop(id(target_ws), None)
+        state.client_health.pop(id(target_ws), None)
         return None
 
     try:
@@ -1397,6 +1756,8 @@ async def prepare_forward_attempt(
             logger.warning(f"⚠️ {log_label} 节点 401 响应体摘要: {preview}")
             record_error(path, 401, "节点到上游鉴权失败", detail=preview, category="node_auth")
         if "Invalid API Key" in preview or "invalid_key" in preview:
+            target_uid = state.client_uids.get(id(attempt.target_ws), "")
+            mark_uid_bad_key(target_uid, "upstream Invalid API Key during dispatch")
             await retire_client(attempt.target_ws, "上游 Invalid API Key")
             retry_state.status_code = 401
             retry_state.response_text = "Gateway Error: 节点上游 MIMO_API_KEY 无效，已移除该失效节点"
@@ -1504,7 +1865,8 @@ async def collect_upstream_chat_response(
     model: str = "",
     stream: bool = False,
 ) -> tuple[dict[str, Any], int, float]:
-    max_retries = min(MAX_RETRIES, get_available_client_count())
+    min_remaining = required_remaining_seconds_for_dispatch(route_key, stream)
+    max_retries = min(MAX_RETRIES, get_available_client_count(min_remaining))
     for attempt in range(max_retries):
         req_id = "unknown"
         try:
@@ -1593,7 +1955,7 @@ async def handle_compaction_request(req_body: dict[str, Any], *, route_key: str,
     if not state.active_clients:
         return no_available_nodes_error()
 
-    if get_available_client_count() == 0:
+    if get_available_client_count(required_remaining_seconds_for_dispatch(route_key, stream)) == 0:
         return no_available_nodes_error()
 
     request_started_at = time.monotonic()
@@ -1722,7 +2084,7 @@ async def audio_speech_handler(payload: AudioSpeechRequest):
     }
     body_text = json.dumps(mimo_payload, ensure_ascii=False)
     
-    max_retries = min(MAX_RETRIES, get_available_client_count())
+    max_retries = min(MAX_RETRIES, get_available_client_count(required_remaining_seconds_for_dispatch("/v1/audio/speech", False)))
     if max_retries == 0:
         return no_available_nodes_error()
 
@@ -1850,7 +2212,7 @@ async def responses_handler(request: Request):
 
     chat_body_text = json.dumps(chat_req, ensure_ascii=False)
     chat_body_text = apply_model_mapping(chat_body_text)
-    max_retries = min(MAX_RETRIES, get_available_client_count())
+    max_retries = min(MAX_RETRIES, get_available_client_count(required_remaining_seconds_for_dispatch("/v1/responses", is_streaming)))
     if max_retries == 0:
         return no_available_nodes_error()
 
@@ -2058,13 +2420,14 @@ async def _forward_request(request: Request, path: str):
 
     body = await request.body()
     method = request.method
-    max_retries = min(MAX_RETRIES, get_available_client_count())
-    if max_retries == 0:
-        return no_available_nodes_error()
-
     retry_state = RetryState()
     body_text = body.decode("utf-8", "ignore").lstrip("\ufeff")
     body_text = apply_model_mapping(body_text)
+    _, stream_from_body = extract_request_metadata(body_text)
+    min_remaining = required_remaining_seconds_for_dispatch(path, stream_from_body)
+    max_retries = min(MAX_RETRIES, get_available_client_count(min_remaining))
+    if max_retries == 0:
+        return no_available_nodes_error()
     route_key = path
     request_started_at = time.monotonic()
     gateway_request_id = new_gateway_request_id()

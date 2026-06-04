@@ -20,6 +20,29 @@ class GatewayState:
         self.rebuild_event: asyncio.Event = asyncio.Event()
         self.client_cooldowns: Dict[int, float] = {}
         self.client_cooldown_reasons: Dict[int, str] = {}
+        # id(ws) -> bridge health state.  New bridge sockets start as
+        # "probing" and only become dispatchable after a successful upstream
+        # probe.  This prevents stale/invalid-key bridges from entering the
+        # request pool merely because the websocket connected.
+        self.client_health: Dict[int, Dict[str, Any]] = {}
+        # uid -> platform lifecycle information learned by manager status
+        # polling.  Gateway dispatch uses expire_at/remain_sec to drain nodes
+        # before the one-hour lease expires.
+        self.uid_lifecycle: Dict[str, Dict[str, Any]] = {}
+        # uid -> unix timestamp until which the UID is banned from dispatch
+        # because an upstream invalid_key was observed.
+        self.bad_key_uids: Dict[str, float] = {}
+        self.bad_key_reasons: Dict[str, str] = {}
+        # uid -> minimum bridge epoch accepted while bad_key ban is active.
+        # This lets freshly injected bridge.py copies reconnect after a hard
+        # rebuild, while old stale copies keep getting rejected.
+        self.uid_min_bridge_epoch: Dict[str, int] = {}
+        # Targeted hard rebuild requests consumed by AccountManager instances.
+        self.uid_rebuild_requests: Dict[str, Dict[str, Any]] = {}
+        # Monotonic global rebuild generation.  Each AccountManager remembers
+        # the generation it has consumed, so /api/rebuild can be hard-rebuild
+        # semantics without relying on a single shared Event flag remaining set.
+        self.global_rebuild_generation: int = 0
         self.metrics_started_at: float = time.time()
         self.metrics_history_last_snapshot: Dict[str, Any] | None = None
         self.metrics: Dict[str, Any] = self._default_metrics()
